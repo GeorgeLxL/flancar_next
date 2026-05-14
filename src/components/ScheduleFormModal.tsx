@@ -58,6 +58,10 @@ const selectStyles = {
   }),
   singleValue: (provided: Record<string, unknown>) => ({ ...provided, color: '#111827' }),
   placeholder: (provided: Record<string, unknown>) => ({ ...provided, color: '#9ca3af' }),
+  // Lift the dropdown above the modal so iOS Safari renders it. The menu is
+  // portaled to <body> (see `menuPortalTarget` below) to escape the modal's
+  // overflow-y-auto / transform stacking context.
+  menuPortal: (provided: Record<string, unknown>) => ({ ...provided, zIndex: 9999 }),
 };
 
 function toDatetimeLocal(iso: string) {
@@ -374,6 +378,8 @@ export default function ScheduleFormModal({
                 styles={selectStyles as never}
                 noOptionsMessage={() => '該当なし'}
                 loadingMessage={() => '検索中...'}
+                menuPortalTarget={typeof document !== 'undefined' ? document.body : null}
+                menuPosition="fixed"
               />
               {errors.customerId && (
                 <p className="mt-1 text-xs text-red-400">{errors.customerId.message}</p>
@@ -441,6 +447,8 @@ export default function ScheduleFormModal({
                           noOptionsMessage={() => '該当なし'}
                           loadingMessage={() => '検索中...'}
                           className="flex-1"
+                          menuPortalTarget={typeof document !== 'undefined' ? document.body : null}
+                          menuPosition="fixed"
                         />
                         <input type="hidden" {...register(`items.${index}.productName`)} />
                         <input type="hidden" {...register(`items.${index}.maker`)} />
@@ -505,6 +513,8 @@ export default function ScheduleFormModal({
                 placeholder="選択してください"
                 styles={selectStyles as never}
                 isSearchable
+                menuPortalTarget={typeof document !== 'undefined' ? document.body : null}
+                menuPosition="fixed"
               />
               {errors.staffId && (
                 <p className="mt-1 text-xs text-red-400">{errors.staffId.message}</p>
