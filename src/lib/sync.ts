@@ -1,12 +1,17 @@
+import { subMonths } from 'date-fns';
 import { getProductUnitPrice, smaregiApi, type SmaregiProduct } from './smaregi';
 import { withTransaction } from './db';
 
-async function fetchAllPages<T>(api: ReturnType<typeof smaregiApi>, path: string): Promise<T[]> {
+async function fetchAllPages<T>(
+  api: ReturnType<typeof smaregiApi>,
+  path: string,
+  extraParams: Record<string, string | number> = {},
+): Promise<T[]> {
   const limit = 1000;
   let page = 1;
   const all: T[] = [];
   while (true) {
-    const result = await api.get(path, { params: { limit, page } });
+    const result = await api.get(path, { params: { limit, page, ...extraParams } });
     const items: T[] = Array.isArray(result.data)
       ? result.data
       : Array.isArray(result.data?.items)
@@ -17,6 +22,18 @@ async function fetchAllPages<T>(api: ReturnType<typeof smaregiApi>, path: string
     page++;
   }
   return all;
+}
+
+// Smaregi filters by record `updDateTime`. Pulling only the last month's
+// updates keeps the sync within the platform's response-time budget (raw
+// full pulls were timing out at 504).
+function lastMonthRange() {
+  const to = new Date();
+  const from = subMonths(to, 1);
+  return {
+    'upd_date_time-from': from.toISOString(),
+    'upd_date_time-to': to.toISOString(),
+  };
 }
 
 export async function syncProducts(accessToken: string) {
@@ -46,7 +63,7 @@ export async function syncProducts(accessToken: string) {
   }
 
   try {
-    const raw = await fetchAllPages<SmaregiProduct>(api, `/${contractId}/pos/products`);
+    const raw = await fetchAllPages<SmaregiProduct>(api, `/${contractId}/pos/products`, lastMonthRange());
     const products = raw
       .map(p => ({
         productId: String(p.productId ?? p.productCode ?? ''),
@@ -92,7 +109,7 @@ export async function syncCustomers(accessToken: string) {
       customerName?: string;
       name?: string;
     };
-    const raw = await fetchAllPages<RawCustomer>(api, `/${contractId}/pos/customers`);
+    const raw = await fetchAllPages<RawCustomer>(api, `/${contractId}/pos/customers`, lastMonthRange());
     const customers = raw
       .map(c => {
         const fullName = `${c.lastName ?? ''} ${c.firstName ?? ''}`.trim();
