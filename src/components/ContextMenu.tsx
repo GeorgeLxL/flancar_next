@@ -19,20 +19,29 @@ export default function ContextMenu({ x, y, items, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const onDocDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    // Swallow the first outside left-click in the capture phase so it only
+    // dismisses the menu without also firing the underlying onClick (which
+    // would, e.g., open the edit/create modal).
+    const onOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        e.stopPropagation();
+        onClose();
+      }
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
-    // Defer so the click that opened us doesn't immediately close it.
+    // Defer attachment so the click that opened the menu doesn't immediately
+    // close it.
     const t = setTimeout(() => {
-      document.addEventListener('mousedown', onDocDown);
+      document.addEventListener('mousedown', onOutside, true);
+      document.addEventListener('click', onOutside, true);
     }, 0);
     document.addEventListener('keydown', onKey);
     return () => {
       clearTimeout(t);
-      document.removeEventListener('mousedown', onDocDown);
+      document.removeEventListener('mousedown', onOutside, true);
+      document.removeEventListener('click', onOutside, true);
       document.removeEventListener('keydown', onKey);
     };
   }, [onClose]);
