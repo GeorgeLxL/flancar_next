@@ -1,4 +1,3 @@
-import { subMonths } from 'date-fns';
 import { getProductUnitPrice, smaregiApi, type SmaregiProduct } from './smaregi';
 import { withTransaction } from './db';
 
@@ -24,15 +23,60 @@ async function fetchAllPages<T>(
   return all;
 }
 
-// Smaregi filters by record `updDateTime`. Pulling only the last month's
+// Smaregi expects timestamps in JST (`+09:00`). Pulling only the last month's
 // updates keeps the sync within the platform's response-time budget (raw
-// full pulls were timing out at 504).
-function lastMonthRange() {
-  const to = new Date();
-  const from = subMonths(to, 1);
+// full pulls were timing out at 504). All time math is done on the JST
+// wall-clock, server-timezone-independent.
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const pad = (n: number) => String(n).padStart(2, '0');
+
+interface JstParts {
+  year: number;
+  month: number; // 1-12
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+function nowInJst(): JstParts {
+  const j = new Date(Date.now() + JST_OFFSET_MS);
   return {
-    'upd_date_time-from': from.toISOString(),
-    'upd_date_time-to': to.toISOString(),
+    year: j.getUTCFullYear(),
+    month: j.getUTCMonth() + 1,
+    day: j.getUTCDate(),
+    hour: j.getUTCHours(),
+    minute: j.getUTCMinutes(),
+    second: j.getUTCSeconds(),
+  };
+}
+
+// "A month ago today, same JST current time" — month-1 with year rollover,
+// day clamped to the target month's last day so 3/31 -> 2/28 etc.
+function oneMonthAgoJst(p: JstParts): JstParts {
+  let year = p.year;
+  let month = p.month - 1;
+  if (month < 1) {
+    month = 12;
+    year -= 1;
+  }
+  const lastDayOfMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return { ...p, year, month, day: Math.min(p.day, lastDayOfMonth) };
+}
+
+function formatJst(p: JstParts): string {
+  return (
+    `${p.year}-${pad(p.month)}-${pad(p.day)}` +
+    `T${pad(p.hour)}:${pad(p.minute)}:${pad(p.second)}+09:00`
+  );
+}
+
+function lastMonthRange() {
+  const now = nowInJst();
+  const from = oneMonthAgoJst(now);
+  return {
+    'upd_date_time-from': formatJst(from),
+    'upd_date_time-to': formatJst(now),
   };
 }
 
