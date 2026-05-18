@@ -24,15 +24,26 @@ async function fetchAllPages<T>(
   return all;
 }
 
-// Smaregi filters by record `updDateTime`. Pulling only the last month's
+// Smaregi expects timestamps in JST (`+09:00`). Pulling only the last month's
 // updates keeps the sync within the platform's response-time budget (raw
 // full pulls were timing out at 504).
+function toJstIso(d: Date): string {
+  const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  const yyyy = jst.getUTCFullYear();
+  const MM = String(jst.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(jst.getUTCDate()).padStart(2, '0');
+  const HH = String(jst.getUTCHours()).padStart(2, '0');
+  const mm = String(jst.getUTCMinutes()).padStart(2, '0');
+  const ss = String(jst.getUTCSeconds()).padStart(2, '0');
+  return `${yyyy}-${MM}-${dd}T${HH}:${mm}:${ss}+09:00`;
+}
+
 function lastMonthRange() {
   const to = new Date();
   const from = subMonths(to, 1);
   return {
-    'upd_date_time-from': from.toISOString(),
-    'upd_date_time-to': to.toISOString(),
+    'upd_date_time-from': toJstIso(from),
+    'upd_date_time-to': toJstIso(to),
   };
 }
 
