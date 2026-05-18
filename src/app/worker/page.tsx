@@ -1,15 +1,29 @@
 'use client';
 
 import { useState } from 'react';
+import toast from 'react-hot-toast';
 import Calendar, { type CalendarEvent } from '@/components/Calendar';
 import ScheduleFormModal from '@/components/ScheduleFormModal';
 import ScheduleSearch from '@/components/ScheduleSearch';
+import ContextMenu, { type ContextMenuItem } from '@/components/ContextMenu';
 import RequireRole from '@/components/RequireRole';
+import { createSchedule, getSchedule, updateSchedule } from '@/lib/api';
 
 type ModalState =
   | { type: 'create'; start: Date; end: Date }
   | { type: 'edit'; id: number }
   | null;
+
+type MenuState =
+  | { type: 'event'; x: number; y: number; event: CalendarEvent }
+  | { type: 'slot'; x: number; y: number; date: Date; granular: boolean }
+  | null;
+
+interface Clipboard {
+  id: number;
+  durationMs: number;
+  originalStart: Date;
+}
 
 export default function WorkerPage() {
   return (
@@ -19,10 +33,64 @@ export default function WorkerPage() {
   );
 }
 
+interface SchedulePayloadItem {
+  productId: string;
+  productName?: string;
+  maker?: string;
+  categoryId?: string;
+  unitPrice: number;
+  quantity: number;
+}
+
+interface ScheduleFull {
+  id: number;
+  title: string;
+  carType: string;
+  description?: string;
+  startAt: string;
+  endAt: string;
+  customerId: string;
+  staffId: string;
+  staffName: string;
+  customer: string;
+  requester: string;
+  showComiPack?: boolean;
+  items: SchedulePayloadItem[];
+}
+
+function buildPayload(schedule: ScheduleFull, newStart: Date, newEnd: Date) {
+  return {
+    title: schedule.title,
+    carType: schedule.carType,
+    description: schedule.description ?? '',
+    startAt: newStart.toISOString(),
+    endAt: newEnd.toISOString(),
+    customerId: schedule.customerId,
+    customerName: '',
+    staffId: schedule.staffId,
+    staffName: schedule.staffName,
+    customer: schedule.customer,
+    requester: schedule.requester,
+    showComiPack: Boolean(schedule.showComiPack),
+    items: (schedule.items ?? []).map(item => ({
+      productId: item.productId,
+      productName: item.productName ?? '',
+      maker: item.maker ?? '',
+      categoryId: item.categoryId ?? '',
+      unitPrice: Number(item.unitPrice) || 0,
+      quantity: Number(item.quantity) || 1,
+    })),
+  };
+}
+
 function Worker() {
   const [modal, setModal] = useState<ModalState>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [menu, setMenu] = useState<MenuState>(null);
+  const [clipboard, setClipboard] = useState<Clipboard | null>(null);
+
+  const closeMenu = () => setMenu(null);
 
   const handleRangeSelect = (start: Date, end: Date) => setModal({ type: 'create', start, end });
   const handleEventClick = (event: CalendarEvent) => setModal({ type: 'edit', id: event.id });
@@ -32,6 +100,93 @@ function Worker() {
     setModal(null);
     setRefreshKey(k => k + 1);
   };
+
+  const handleEventContextMenu = (event: CalendarEvent, x: number, y: number) => {
+    setMenu({ type: 'event', x, y, event });
+  };
+
+  const handleSlotContextMenu = (date: Date, x: number, y: number, granular: boolean) => {
+    setMenu({ type: 'slot', x, y, date, granular });
+  };
+
+  const doCopy = (event: CalendarEvent) => {
+    const start = new Date(event.startAt);
+    const end = new Date(event.endAt);
+    setClipboard({
+      id: event.id,
+      durationMs: Math.max(end.getTime() - start.getTime(), 15 * 60 * 1000),
+      originalStart: start,
+    });
+    toast.success('スケジュールをコピーしました。');
+  };
+
+  // For month-view targets (no time-of-day), preserve the original event's
+  // time-of-day on the picked day. For granular targets (time grid drop / right
+  // click), the dropped/clicked instant is used as-is.
+  const anchorTimeOnDate = (target: Date, original: Date): Date => {
+    const d = new Date(target);
+    d.setHours(original.getHours(), original.getMinutes(), 0, 0);
+    return d;
+  };
+
+  const doPaste = async (target: Date, granular: boolean) => {
+    if (!clipboard) return;
+    try {
+      const schedule: ScheduleFull = await getSchedule(clipboard.id);
+      const start = granular ? target : anchorTimeOnDate(target, clipboard.originalStart);
+      const end = new Date(start.getTime() + clipboard.durationMs);
+      await createSchedule(buildPayload(schedule, start, end));
+      toast.success('スケジュールを貼り付けました。');
+      setRefreshKey(k => k + 1);
+    } catch {
+      toast.error('貼り付けに失敗しました。');
+    }
+  };
+
+  const handleEventDrop = async (
+    eventId: number,
+    droppedAt: Date,
+    copy: boolean,
+    granular: boolean,
+  ) => {
+    try {
+      const schedule: ScheduleFull = await getSchedule(eventId);
+      const originalStart = new Date(schedule.startAt);
+      const originalEnd = new Date(schedule.endAt);
+      const durationMs = Math.max(
+        originalEnd.getTime() - originalStart.getTime(),
+        15 * 60 * 1000,
+      );
+      const start = granular ? droppedAt : anchorTimeOnDate(droppedAt, originalStart);
+      const end = new Date(start.getTime() + durationMs);
+      const payload = buildPayload(schedule, start, end);
+
+      if (copy) {
+        await createSchedule(payload);
+        toast.success('スケジュールをコピーしました。');
+      } else {
+        await updateSchedule(eventId, payload);
+        toast.success('スケジュールを移動しました。');
+      }
+      setRefreshKey(k => k + 1);
+    } catch {
+      toast.error(copy ? 'コピーに失敗しました。' : '移動に失敗しました。');
+    }
+  };
+
+  const menuItems: ContextMenuItem[] = (() => {
+    if (!menu) return [];
+    if (menu.type === 'event') {
+      return [{ label: 'コピー', onClick: () => doCopy(menu.event) }];
+    }
+    return [
+      {
+        label: '貼り付け',
+        disabled: !clipboard,
+        onClick: () => doPaste(menu.date, menu.granular),
+      },
+    ];
+  })();
 
   return (
     <div className="min-h-screen bg-white px-4 py-6 sm:px-8 sm:py-10">
@@ -74,7 +229,14 @@ function Worker() {
         {searchOpen ? (
           <ScheduleSearch onSelect={handleSearchSelect} />
         ) : (
-          <Calendar refreshKey={refreshKey} onRangeSelect={handleRangeSelect} onEventClick={handleEventClick} />
+          <Calendar
+            refreshKey={refreshKey}
+            onRangeSelect={handleRangeSelect}
+            onEventClick={handleEventClick}
+            onEventContextMenu={handleEventContextMenu}
+            onSlotContextMenu={handleSlotContextMenu}
+            onEventDrop={handleEventDrop}
+          />
         )}
       </div>
 
@@ -89,6 +251,10 @@ function Worker() {
 
       {modal?.type === 'edit' && (
         <ScheduleFormModal scheduleId={modal.id} onClose={closeModal} onSaved={onSaved} onDeleted={onSaved} />
+      )}
+
+      {menu && menuItems.length > 0 && (
+        <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />
       )}
     </div>
   );

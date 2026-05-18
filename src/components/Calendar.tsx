@@ -70,6 +70,15 @@ interface CalendarProps {
   refreshKey?: number;
   onRangeSelect?: (start: Date, end: Date) => void;
   onEventClick?: (event: CalendarEvent) => void;
+  onEventContextMenu?: (event: CalendarEvent, clientX: number, clientY: number) => void;
+  onSlotContextMenu?: (date: Date, clientX: number, clientY: number, granular: boolean) => void;
+  onEventDrop?: (eventId: number, droppedAt: Date, copy: boolean, granular: boolean) => void;
+}
+
+const DRAG_MIME = 'application/x-flancar-schedule';
+
+function isFlancarDrag(e: React.DragEvent): boolean {
+  return Array.from(e.dataTransfer.types).includes(DRAG_MIME);
 }
 
 function rangeForView(view: CalendarView, anchor: Date): { from: Date; to: Date } {
@@ -143,12 +152,18 @@ function TimeGrid({
   staffColors,
   onRangeSelect,
   onEventClick,
+  onEventContextMenu,
+  onSlotContextMenu,
+  onEventDrop,
 }: {
   days: Date[];
   events: CalendarEvent[];
   staffColors: Record<string, string>;
   onRangeSelect?: (start: Date, end: Date) => void;
   onEventClick?: (event: CalendarEvent) => void;
+  onEventContextMenu?: (event: CalendarEvent, clientX: number, clientY: number) => void;
+  onSlotContextMenu?: (date: Date, clientX: number, clientY: number, granular: boolean) => void;
+  onEventDrop?: (eventId: number, droppedAt: Date, copy: boolean, granular: boolean) => void;
 }) {
   const nowRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ di: number; start: number; end: number } | null>(null);
@@ -284,6 +299,23 @@ function TimeGrid({
                       onMouseDown={e => onMouseDown(di, slot, e)}
                       onMouseEnter={() => onMouseEnter(di, slot)}
                       onClick={() => onClick(di, slot)}
+                      onContextMenu={e => {
+                        if (!onSlotContextMenu) return;
+                        e.preventDefault();
+                        onSlotContextMenu(slotToDate(days[di], slot), e.clientX, e.clientY, true);
+                      }}
+                      onDragOver={e => {
+                        if (!isFlancarDrag(e)) return;
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = e.ctrlKey || e.metaKey ? 'copy' : 'move';
+                      }}
+                      onDrop={e => {
+                        if (!isFlancarDrag(e)) return;
+                        e.preventDefault();
+                        const id = Number(e.dataTransfer.getData(DRAG_MIME));
+                        if (!id || !onEventDrop) return;
+                        onEventDrop(id, slotToDate(days[di], slot), e.ctrlKey || e.metaKey, true);
+                      }}
                       className={`h-3.5 cursor-pointer relative ${
                         isHourStart ? 'border-t border-gray-300' : ''
                       } ${dragging ? 'bg-blue-100' : 'hover:bg-gray-50'}`}
@@ -309,6 +341,19 @@ function TimeGrid({
                   return (
                     <div
                       key={event.id}
+                      draggable
+                      onMouseDown={e => e.stopPropagation()}
+                      onDragStart={e => {
+                        e.stopPropagation();
+                        e.dataTransfer.setData(DRAG_MIME, String(event.id));
+                        e.dataTransfer.effectAllowed = 'copyMove';
+                      }}
+                      onContextMenu={e => {
+                        if (!onEventContextMenu) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onEventContextMenu(event, e.clientX, e.clientY);
+                      }}
                       onClick={e => {
                         e.stopPropagation();
                         onEventClick?.(event);
@@ -338,12 +383,18 @@ function MonthView({
   staffColors,
   onRangeSelect,
   onEventClick,
+  onEventContextMenu,
+  onSlotContextMenu,
+  onEventDrop,
 }: {
   anchor: Date;
   events: CalendarEvent[];
   staffColors: Record<string, string>;
   onRangeSelect?: (start: Date, end: Date) => void;
   onEventClick?: (event: CalendarEvent) => void;
+  onEventContextMenu?: (event: CalendarEvent, clientX: number, clientY: number) => void;
+  onSlotContextMenu?: (date: Date, clientX: number, clientY: number, granular: boolean) => void;
+  onEventDrop?: (eventId: number, droppedAt: Date, copy: boolean, granular: boolean) => void;
 }) {
   const days = eachDayOfInterval({
     start: startOfWeek(startOfMonth(anchor), { weekStartsOn: 0 }),
@@ -403,6 +454,23 @@ function MonthView({
               onTouchStart={() => inMonth && startLongPress(day)}
               onTouchEnd={cancelLongPress}
               onTouchMove={cancelLongPress}
+              onContextMenu={e => {
+                if (!onSlotContextMenu || !inMonth) return;
+                e.preventDefault();
+                onSlotContextMenu(day, e.clientX, e.clientY, false);
+              }}
+              onDragOver={e => {
+                if (!isFlancarDrag(e) || !inMonth) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = e.ctrlKey || e.metaKey ? 'copy' : 'move';
+              }}
+              onDrop={e => {
+                if (!isFlancarDrag(e) || !inMonth) return;
+                e.preventDefault();
+                const id = Number(e.dataTransfer.getData(DRAG_MIME));
+                if (!id || !onEventDrop) return;
+                onEventDrop(id, day, e.ctrlKey || e.metaKey, false);
+              }}
               className={`border-b border-r border-gray-100 p-1.5 transition-colors ${inMonth ? 'bg-white hover:bg-gray-50 cursor-pointer' : 'bg-gray-50/50 cursor-default'}`}
             >
               <div className="flex justify-end mb-1">
@@ -419,6 +487,19 @@ function MonthView({
                     <button
                       key={event.id}
                       type="button"
+                      draggable
+                      onMouseDown={e => e.stopPropagation()}
+                      onDragStart={e => {
+                        e.stopPropagation();
+                        e.dataTransfer.setData(DRAG_MIME, String(event.id));
+                        e.dataTransfer.effectAllowed = 'copyMove';
+                      }}
+                      onContextMenu={e => {
+                        if (!onEventContextMenu) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onEventContextMenu(event, e.clientX, e.clientY);
+                      }}
                       onClick={e => {
                         e.stopPropagation();
                         onEventClick?.(event);
@@ -445,7 +526,14 @@ function MonthView({
   );
 }
 
-export default function Calendar({ refreshKey, onRangeSelect, onEventClick }: CalendarProps) {
+export default function Calendar({
+  refreshKey,
+  onRangeSelect,
+  onEventClick,
+  onEventContextMenu,
+  onSlotContextMenu,
+  onEventDrop,
+}: CalendarProps) {
   const pathname = usePathname();
   const { anchor, setAnchor, view, setView } = useCalendar();
   const { user } = useAuth();
@@ -567,13 +655,40 @@ export default function Calendar({ refreshKey, onRangeSelect, onEventClick }: Ca
       </div>
 
       {view === 'month' && (
-        <MonthView anchor={anchor} events={events} staffColors={staffColors} onRangeSelect={onRangeSelect} onEventClick={onEventClick} />
+        <MonthView
+          anchor={anchor}
+          events={events}
+          staffColors={staffColors}
+          onRangeSelect={onRangeSelect}
+          onEventClick={onEventClick}
+          onEventContextMenu={onEventContextMenu}
+          onSlotContextMenu={onSlotContextMenu}
+          onEventDrop={onEventDrop}
+        />
       )}
       {view === 'week' && (
-        <TimeGrid days={weekDays} events={events} staffColors={staffColors} onRangeSelect={onRangeSelect} onEventClick={onEventClick} />
+        <TimeGrid
+          days={weekDays}
+          events={events}
+          staffColors={staffColors}
+          onRangeSelect={onRangeSelect}
+          onEventClick={onEventClick}
+          onEventContextMenu={onEventContextMenu}
+          onSlotContextMenu={onSlotContextMenu}
+          onEventDrop={onEventDrop}
+        />
       )}
       {view === 'day' && (
-        <TimeGrid days={[anchor]} events={events} staffColors={staffColors} onRangeSelect={onRangeSelect} onEventClick={onEventClick} />
+        <TimeGrid
+          days={[anchor]}
+          events={events}
+          staffColors={staffColors}
+          onRangeSelect={onRangeSelect}
+          onEventClick={onEventClick}
+          onEventContextMenu={onEventContextMenu}
+          onSlotContextMenu={onSlotContextMenu}
+          onEventDrop={onEventDrop}
+        />
       )}
     </div>
   );
