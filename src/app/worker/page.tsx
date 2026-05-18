@@ -2,12 +2,13 @@
 
 import { useState } from 'react';
 import toast from 'react-hot-toast';
+import Swal from 'sweetalert2';
 import Calendar, { type CalendarEvent } from '@/components/Calendar';
 import ScheduleFormModal from '@/components/ScheduleFormModal';
 import ScheduleSearch from '@/components/ScheduleSearch';
 import ContextMenu, { type ContextMenuItem } from '@/components/ContextMenu';
 import RequireRole from '@/components/RequireRole';
-import { createSchedule, getSchedule, updateSchedule } from '@/lib/api';
+import { createSchedule, deleteSchedule, getSchedule, updateSchedule } from '@/lib/api';
 
 type ModalState =
   | { type: 'create'; start: Date; end: Date }
@@ -20,6 +21,7 @@ type MenuState =
   | null;
 
 interface Clipboard {
+  op: 'copy' | 'move';
   id: number;
   durationMs: number;
   originalStart: Date;
@@ -83,6 +85,15 @@ function buildPayload(schedule: ScheduleFull, newStart: Date, newEnd: Date) {
   };
 }
 
+// In month-view the right-click / drop target has no time-of-day, so we keep
+// the original event's time-of-day on that date. In time-grid views the target
+// is an exact slot time, so use it as-is.
+function anchorTimeOnDate(target: Date, original: Date): Date {
+  const d = new Date(target);
+  d.setHours(original.getHours(), original.getMinutes(), 0, 0);
+  return d;
+}
+
 function Worker() {
   const [modal, setModal] = useState<ModalState>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -91,6 +102,7 @@ function Worker() {
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
 
   const closeMenu = () => setMenu(null);
+  const bump = () => setRefreshKey(k => k + 1);
 
   const handleRangeSelect = (start: Date, end: Date) => setModal({ type: 'create', start, end });
   const handleEventClick = (event: CalendarEvent) => setModal({ type: 'edit', id: event.id });
@@ -98,7 +110,7 @@ function Worker() {
   const closeModal = () => setModal(null);
   const onSaved = () => {
     setModal(null);
-    setRefreshKey(k => k + 1);
+    bump();
   };
 
   const handleEventContextMenu = (event: CalendarEvent, x: number, y: number) => {
@@ -109,24 +121,39 @@ function Worker() {
     setMenu({ type: 'slot', x, y, date, granular });
   };
 
-  const doCopy = (event: CalendarEvent) => {
+  const putOnClipboard = (event: CalendarEvent, op: 'copy' | 'move') => {
     const start = new Date(event.startAt);
     const end = new Date(event.endAt);
     setClipboard({
+      op,
       id: event.id,
       durationMs: Math.max(end.getTime() - start.getTime(), 15 * 60 * 1000),
       originalStart: start,
     });
-    toast.success('スケジュールをコピーしました。');
+    toast.success(op === 'copy' ? 'スケジュールをコピーしました。' : 'スケジュールを切り取りました。');
   };
 
-  // For month-view targets (no time-of-day), preserve the original event's
-  // time-of-day on the picked day. For granular targets (time grid drop / right
-  // click), the dropped/clicked instant is used as-is.
-  const anchorTimeOnDate = (target: Date, original: Date): Date => {
-    const d = new Date(target);
-    d.setHours(original.getHours(), original.getMinutes(), 0, 0);
-    return d;
+  const doDelete = async (event: CalendarEvent) => {
+    const result = await Swal.fire({
+      title: 'このスケジュールを削除しますか？',
+      text: '削除すると元に戻せません。',
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: '削除する',
+      cancelButtonText: 'キャンセル',
+      confirmButtonColor: '#dc2626',
+      cancelButtonColor: '#64748b',
+      reverseButtons: true,
+    });
+    if (!result.isConfirmed) return;
+    try {
+      await deleteSchedule(event.id);
+      toast.success('スケジュールを削除しました。');
+      if (clipboard?.id === event.id) setClipboard(null);
+      bump();
+    } catch {
+      toast.error('削除に失敗しました。');
+    }
   };
 
   const doPaste = async (target: Date, granular: boolean) => {
@@ -135,12 +162,29 @@ function Worker() {
       const schedule: ScheduleFull = await getSchedule(clipboard.id);
       const start = granular ? target : anchorTimeOnDate(target, clipboard.originalStart);
       const end = new Date(start.getTime() + clipboard.durationMs);
-      await createSchedule(buildPayload(schedule, start, end));
-      toast.success('スケジュールを貼り付けました。');
-      setRefreshKey(k => k + 1);
+      const payload = buildPayload(schedule, start, end);
+
+      if (clipboard.op === 'copy') {
+        await createSchedule(payload);
+        toast.success('スケジュールを貼り付けました。');
+      } else {
+        await updateSchedule(clipboard.id, payload);
+        toast.success('スケジュールを移動しました。');
+        // Move is one-shot: clear the clipboard so the same item can't be
+        // re-moved repeatedly by accident.
+        setClipboard(null);
+      }
+      bump();
     } catch {
       toast.error('貼り付けに失敗しました。');
     }
+  };
+
+  const doCreate = (date: Date, granular: boolean) => {
+    const start = granular ? new Date(date) : new Date(date);
+    if (!granular) start.setHours(9, 0, 0, 0);
+    const end = new Date(start.getTime() + 60 * 60 * 1000); // default 1h
+    setModal({ type: 'create', start, end });
   };
 
   const handleEventDrop = async (
@@ -168,7 +212,7 @@ function Worker() {
         await updateSchedule(eventId, payload);
         toast.success('スケジュールを移動しました。');
       }
-      setRefreshKey(k => k + 1);
+      bump();
     } catch {
       toast.error(copy ? 'コピーに失敗しました。' : '移動に失敗しました。');
     }
@@ -177,9 +221,14 @@ function Worker() {
   const menuItems: ContextMenuItem[] = (() => {
     if (!menu) return [];
     if (menu.type === 'event') {
-      return [{ label: 'コピー', onClick: () => doCopy(menu.event) }];
+      return [
+        { label: 'コピー', onClick: () => putOnClipboard(menu.event, 'copy') },
+        { label: '移動', onClick: () => putOnClipboard(menu.event, 'move') },
+        { label: '削除', onClick: () => doDelete(menu.event) },
+      ];
     }
     return [
+      { label: '作成', onClick: () => doCreate(menu.date, menu.granular) },
       {
         label: '貼り付け',
         disabled: !clipboard,
