@@ -201,11 +201,20 @@ function SchedulePDFPage({
         <Text style={styles.slipNo}>伝票番号 {schedule.pdfNumber?.slice(-7) ?? ''}</Text>
         <Text style={styles.title}>{PDF_TYPES[type]}</Text>
         <View style={styles.issueBox}>
-          <Text>
-            {type === 'estimate'
-              ? formatDate(quotedDate || schedule.createdAt, 'yyyy 年  M 月  d 日')
-              : `${new Date().getFullYear()} 年　　月　　日`}
-          </Text>
+          {type === 'estimate' ? (
+            <Text>{formatDate(quotedDate || schedule.createdAt, 'yyyy 年  M 月  d 日')}</Text>
+          ) : (
+            // react-pdf collapses repeated whitespace within a single <Text>,
+            // so the blank month/day spots have to be real layout gaps —
+            // empty Views with an explicit width.
+            <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+              <Text>{new Date().getFullYear()} 年</Text>
+              <View style={{ width: 22 }} />
+              <Text>月</Text>
+              <View style={{ width: 22 }} />
+              <Text>日</Text>
+            </View>
+          )}
           <Text>登録番号:T8040001012842</Text>
         </View>
       </View>
