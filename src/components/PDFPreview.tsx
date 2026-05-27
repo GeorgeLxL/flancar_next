@@ -204,7 +204,7 @@ function SchedulePDFPage({
           <Text>
             {type === 'estimate'
               ? formatDate(quotedDate || schedule.createdAt, 'yyyy 年  M 月  d 日')
-              : `${new Date().getFullYear()} 年&nbsp;nbsp;nbsp;nbsp;月&nbsp;nbsp;nbsp;nbsp;日`}
+              : `${new Date().getFullYear()} 年　　月　　日`}
           </Text>
           <Text>登録番号:T8040001012842</Text>
         </View>
