@@ -399,10 +399,20 @@ function SchedulePDF({
 let fontRegistered = false;
 function ensureFont() {
   if (fontRegistered || typeof window === 'undefined') return;
+  const origin = window.location.origin;
+  // Register Regular + Bold so bold runs don't fall back to a font without
+  // Japanese glyphs (the previous cause of 文字化け on hard kanji and symbols
+  // in headings/labels).
   Font.register({
     family: 'NotoSansJP',
-    src: `${window.location.origin}/fonts/NotoSansJP-Regular.ttf`,
+    fonts: [
+      { src: `${origin}/fonts/NotoSansJP-Regular.ttf`, fontWeight: 'normal' },
+      { src: `${origin}/fonts/NotoSansJP-Bold.ttf`, fontWeight: 'bold' },
+    ],
   });
+  // Disable hyphenation/word-breaking — react-pdf otherwise breaks mid-word on
+  // characters it doesn't recognize, which can look like corruption.
+  Font.registerHyphenationCallback(word => [word]);
   fontRegistered = true;
 }
 

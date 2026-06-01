@@ -191,6 +191,9 @@ export default function ScheduleFormModal({
       staffName: user?.staffName || '',
       customer: '',
       requester: '',
+      // Default ON for new schedules. Existing schedules overwrite this in
+      // the edit-load useEffect below, so their saved value is preserved.
+      showComiPack: true,
     },
   });
 
