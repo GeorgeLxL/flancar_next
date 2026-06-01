@@ -29,6 +29,22 @@ function Clerk() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
 
+  // If we arrived here via the worker page's auto-redirect after save
+  // (`/clerk?schedule=<id>`), pop that schedule's PDF preview straight away
+  // and clean the URL so a refresh doesn't keep re-opening it.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const id = Number(params.get('schedule'));
+    if (!id) return;
+    document.body.style.overflow = 'hidden';
+    getSchedule(id)
+      .then((data: PreviewScheduleWithMeta) => setSelected(data))
+      .catch(() => toast.error('スケジュールの取得に失敗しました。'))
+      .finally(() => {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      });
+  }, []);
+
   useEffect(() => {
     const es = new EventSource('/schedules/stream', { withCredentials: true });
     es.addEventListener('schedule', e => {

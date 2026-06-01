@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import Swal from 'sweetalert2';
 import Calendar, { type CalendarEvent } from '@/components/Calendar';
@@ -8,6 +9,7 @@ import ScheduleFormModal from '@/components/ScheduleFormModal';
 import ScheduleSearch from '@/components/ScheduleSearch';
 import ContextMenu, { type ContextMenuItem } from '@/components/ContextMenu';
 import RequireRole from '@/components/RequireRole';
+import { useAuth } from '@/components/AuthContext';
 import { createSchedule, deleteSchedule, getSchedule, updateSchedule } from '@/lib/api';
 
 type ModalState =
@@ -95,6 +97,8 @@ function anchorTimeOnDate(target: Date, original: Date): Date {
 }
 
 function Worker() {
+  const router = useRouter();
+  const { user } = useAuth();
   const [modal, setModal] = useState<ModalState>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -108,9 +112,16 @@ function Worker() {
   const handleEventClick = (event: CalendarEvent) => setModal({ type: 'edit', id: event.id });
   const handleSearchSelect = (id: number) => setModal({ type: 'edit', id });
   const closeModal = () => setModal(null);
-  const onSaved = () => {
+
+  // After save: admins jump straight to the clerk page with the saved
+  // schedule's PDF preview open. Pure workers stay on the worker page
+  // (they don't have access to /clerk anyway).
+  const onSaved = (savedId: number) => {
     setModal(null);
     bump();
+    if (user?.roleId === '1' && savedId) {
+      router.push(`/clerk?schedule=${savedId}`);
+    }
   };
 
   const handleEventContextMenu = (event: CalendarEvent, x: number, y: number) => {
@@ -299,7 +310,15 @@ function Worker() {
       )}
 
       {modal?.type === 'edit' && (
-        <ScheduleFormModal scheduleId={modal.id} onClose={closeModal} onSaved={onSaved} onDeleted={onSaved} />
+        <ScheduleFormModal
+          scheduleId={modal.id}
+          onClose={closeModal}
+          onSaved={onSaved}
+          onDeleted={() => {
+            setModal(null);
+            bump();
+          }}
+        />
       )}
 
       {menu && menuItems.length > 0 && (

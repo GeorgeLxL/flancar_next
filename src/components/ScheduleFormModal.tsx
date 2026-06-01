@@ -30,7 +30,7 @@ interface Props {
   defaultDate?: Date | null;
   defaultEndDate?: Date | null;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (savedId: number) => void;
   onDeleted?: () => void;
 }
 
@@ -259,10 +259,13 @@ export default function ScheduleFormModal({
       })),
     };
     try {
-      if (isEdit && scheduleId) await updateSchedule(scheduleId, payload);
-      else await createSchedule(payload);
+      const saved =
+        isEdit && scheduleId
+          ? await updateSchedule(scheduleId, payload)
+          : await createSchedule(payload);
       toast.success(isEdit ? 'スケジュールを更新しました。' : 'スケジュールを作成しました。');
-      onSaved();
+      const savedId = Number((saved as { id?: number } | undefined)?.id ?? scheduleId ?? 0);
+      onSaved(savedId);
     } catch {
       toast.error('保存に失敗しました。');
     }
