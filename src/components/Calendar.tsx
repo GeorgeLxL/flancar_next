@@ -1,25 +1,16 @@
 'use client';
 
-import {
-  addDays,
-  addMonths,
-  addWeeks,
-  eachDayOfInterval,
-  endOfMonth,
-  endOfWeek,
-  format,
-  isSameDay,
-  isSameMonth,
-  isToday,
-  startOfDay,
-  startOfMonth,
-  startOfWeek,
-  subDays,
-  subMonths,
-  subWeeks,
-} from 'date-fns';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { format } from 'date-fns';
+import {
+  Calendar as RSCalendar,
+  type CalendarEvent as RSCalendarEvent,
+  type CalendarView as RSView,
+  type EventDropInfo,
+  type RangeSelectInfo,
+} from 'react-scheduled-calendar';
+import 'react-scheduled-calendar/styles.css';
 import { usePathname } from 'next/navigation';
 import { getSchedulesByRange, getStaffColors } from '@/lib/api';
 import { useAuth } from './AuthContext';
@@ -37,7 +28,21 @@ export interface CalendarEvent {
   items: { unitPrice: number; quantity: number }[];
 }
 
-export type CalendarView = 'day' | 'week' | 'month';
+interface FlancarMeta {
+  status: CalendarEvent['status'];
+  customerName: string;
+  requester: string;
+  items: { unitPrice: number; quantity: number }[];
+}
+
+interface CalendarProps {
+  refreshKey?: number;
+  onRangeSelect?: (start: Date, end: Date) => void;
+  onEventClick?: (event: CalendarEvent) => void;
+  onEventContextMenu?: (event: CalendarEvent, clientX: number, clientY: number) => void;
+  onSlotContextMenu?: (date: Date, clientX: number, clientY: number, granular: boolean) => void;
+  onEventDrop?: (eventId: number, droppedAt: Date, copy: boolean, granular: boolean) => void;
+}
 
 const STATUS_COLOR_HEX: Record<CalendarEvent['status'], string> = {
   draft: '#9ca3af',
@@ -53,477 +58,44 @@ const STATUS_LABEL: Record<CalendarEvent['status'], string> = {
   finished: '完了',
 };
 
-const DAY_HEADERS = ['日', '月', '火', '水', '木', '金', '土'];
-const SLOTS = Array.from({ length: 96 }, (_, i) => i);
-
-function slotToDate(day: Date, slot: number): Date {
-  const d = new Date(day);
-  d.setHours(Math.floor(slot / 4), (slot % 4) * 15, 0, 0);
-  return d;
+// Picks the visible color for an event: explicit staff color wins, status palette is the fallback.
+function resolveColor(staffId: string, status: CalendarEvent['status'], staffColors: Record<string, string>): string {
+  return staffColors[staffId] ?? STATUS_COLOR_HEX[status];
 }
 
-function dateToSlot(date: Date): number {
-  return date.getHours() * 4 + Math.floor(date.getMinutes() / 15);
-}
-
-interface CalendarProps {
-  refreshKey?: number;
-  onRangeSelect?: (start: Date, end: Date) => void;
-  onEventClick?: (event: CalendarEvent) => void;
-  onEventContextMenu?: (event: CalendarEvent, clientX: number, clientY: number) => void;
-  onSlotContextMenu?: (date: Date, clientX: number, clientY: number, granular: boolean) => void;
-  onEventDrop?: (eventId: number, droppedAt: Date, copy: boolean, granular: boolean) => void;
-}
-
-const DRAG_MIME = 'application/x-flancar-schedule';
-
-function isFlancarDrag(e: React.DragEvent): boolean {
-  return Array.from(e.dataTransfer.types).includes(DRAG_MIME);
-}
-
-function rangeForView(view: CalendarView, anchor: Date): { from: Date; to: Date } {
-  if (view === 'day') return { from: startOfDay(anchor), to: addDays(startOfDay(anchor), 1) };
-  if (view === 'week') {
-    const from = startOfWeek(anchor, { weekStartsOn: 0 });
-    return { from, to: addDays(from, 7) };
-  }
+// Re-shape what the API returns into the package's generic CalendarEvent shape,
+// stashing all FlanCar-specific fields on `meta` so `renderEvent` can use them.
+function toRsEvent(e: CalendarEvent, staffColors: Record<string, string>): RSCalendarEvent<FlancarMeta> {
   return {
-    from: startOfWeek(startOfMonth(anchor), { weekStartsOn: 0 }),
-    to: endOfWeek(endOfMonth(anchor), { weekStartsOn: 0 }),
+    id: e.id,
+    title: e.title,
+    start: e.startAt,
+    end: e.endAt,
+    color: resolveColor(e.staffId, e.status, staffColors),
+    category: e.staffId,
+    meta: {
+      status: e.status,
+      customerName: e.customerName,
+      requester: e.requester,
+      items: e.items,
+    },
   };
 }
 
-function eventsForDay(events: CalendarEvent[], day: Date) {
-  return events.filter(e => {
-    const start = new Date(e.startAt);
-    const end = new Date(e.endAt);
-    return isSameDay(day, start) || isSameDay(day, end) || (day > start && day < end);
-  });
-}
-
-const SLOT_HEIGHT = 14;
-
-interface LayoutEvent {
-  event: CalendarEvent;
-  col: number;
-  totalCols: number;
-  startSlot: number;
-  endSlot: number;
-}
-
-function layoutEventsForDay(events: CalendarEvent[], day: Date): LayoutEvent[] {
-  const dayEvents = events
-    .filter(e => {
-      const start = new Date(e.startAt);
-      const end = new Date(e.endAt);
-      return isSameDay(day, start) || isSameDay(day, end) || (day > start && day < end);
-    })
-    .map(e => {
-      const start = new Date(e.startAt);
-      const end = new Date(e.endAt);
-      return {
-        event: e,
-        startSlot: isSameDay(day, start) ? dateToSlot(start) : 0,
-        endSlot: isSameDay(day, end) ? dateToSlot(end) : 96,
-      };
-    })
-    .sort((a, b) => a.startSlot - b.startSlot);
-
-  const result: LayoutEvent[] = [];
-
-  for (const item of dayEvents) {
-    let col = 0;
-    while (result.some(r => r.col === col && r.startSlot < item.endSlot && r.endSlot > item.startSlot)) col++;
-    result.push({ ...item, col, totalCols: 1 });
-  }
-
-  for (let i = 0; i < result.length; i++) {
-    const overlapping = result.filter(r => r.startSlot < result[i].endSlot && r.endSlot > result[i].startSlot);
-    const maxCol = Math.max(...overlapping.map(r => r.col));
-    for (const r of overlapping) r.totalCols = maxCol + 1;
-  }
-
-  return result;
-}
-
-function TimeGrid({
-  days,
-  events,
-  staffColors,
-  onRangeSelect,
-  onEventClick,
-  onEventContextMenu,
-  onSlotContextMenu,
-  onEventDrop,
-}: {
-  days: Date[];
-  events: CalendarEvent[];
-  staffColors: Record<string, string>;
-  onRangeSelect?: (start: Date, end: Date) => void;
-  onEventClick?: (event: CalendarEvent) => void;
-  onEventContextMenu?: (event: CalendarEvent, clientX: number, clientY: number) => void;
-  onSlotContextMenu?: (date: Date, clientX: number, clientY: number, granular: boolean) => void;
-  onEventDrop?: (eventId: number, droppedAt: Date, copy: boolean, granular: boolean) => void;
-}) {
-  const nowRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ di: number; start: number; end: number } | null>(null);
-  const [drag, setDrag] = useState<{ di: number; start: number; end: number } | null>(null);
-
-  useEffect(() => {
-    nowRef.current?.scrollIntoView({ block: 'center' });
-  }, []);
-
-  const now = new Date();
-  const nowSlot = dateToSlot(now);
-
-  const onClick = (di: number, slot: number) => {
-    if (!onRangeSelect) return;
-    const isMobile = typeof window !== 'undefined' && window.innerWidth < 640;
-    if (isMobile) {
-      const hour = Math.floor(slot / 4);
-      const start = new Date(days[di]);
-      start.setHours(hour, 0, 0, 0);
-      const end = new Date(days[di]);
-      end.setHours(hour + 1, 0, 0, 0);
-      onRangeSelect(start, end);
-    } else {
-      onRangeSelect(slotToDate(days[di], slot), slotToDate(days[di], slot + 1));
-    }
+// Reverse of toRsEvent — needed when callbacks come back from the package
+// carrying its RS event shape and we want to give the host page the FlanCar shape.
+function fromRsEvent(e: RSCalendarEvent<FlancarMeta>): CalendarEvent {
+  return {
+    id: Number(e.id),
+    title: e.title,
+    startAt: typeof e.start === 'string' ? e.start : e.start.toISOString(),
+    endAt: typeof e.end === 'string' ? e.end : e.end.toISOString(),
+    status: e.meta?.status ?? 'draft',
+    staffId: e.category ?? '',
+    customerName: e.meta?.customerName ?? '',
+    requester: e.meta?.requester ?? '',
+    items: e.meta?.items ?? [],
   };
-
-  const onMouseDown = (di: number, slot: number, e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    dragRef.current = { di, start: slot, end: slot };
-    setDrag({ di, start: slot, end: slot });
-  };
-
-  const onMouseEnter = (di: number, slot: number) => {
-    if (!dragRef.current || dragRef.current.di !== di) return;
-    dragRef.current.end = slot;
-    setDrag({ ...dragRef.current });
-  };
-
-  const onMouseUp = () => {
-    if (!dragRef.current) {
-      setDrag(null);
-      return;
-    }
-    const { di, start, end } = dragRef.current;
-    const lo = Math.min(start, end);
-    const hi = Math.max(start, end);
-    const wasDrag = lo !== hi;
-    dragRef.current = null;
-    setDrag(null);
-    if (wasDrag && onRangeSelect) {
-      onRangeSelect(slotToDate(days[di], lo), slotToDate(days[di], hi + 1));
-    }
-  };
-
-  const isDragging = (di: number, slot: number) => {
-    if (!drag || drag.di !== di) return false;
-    const lo = Math.min(drag.start, drag.end);
-    const hi = Math.max(drag.start, drag.end);
-    return slot >= lo && slot <= hi;
-  };
-
-  return (
-    <div
-      className="flex flex-col flex-1 overflow-hidden border border-gray-200 rounded-2xl select-none"
-      onMouseUp={onMouseUp}
-      onMouseLeave={onMouseUp}
-    >
-      <div
-        className="grid border-b border-gray-200 bg-white shrink-0"
-        style={{ gridTemplateColumns: `48px repeat(${days.length}, 1fr)` }}
-      >
-        <div className="border-r border-gray-200" />
-        {days.map(day => {
-          const today = isToday(day);
-          const dow = day.getDay();
-          return (
-            <div key={day.toISOString()} className="py-2 text-center border-r border-gray-200 last:border-r-0">
-              <div
-                className={`text-xs font-medium ${dow === 0 ? 'text-red-400' : dow === 6 ? 'text-blue-400' : 'text-gray-400'}`}
-              >
-                {DAY_HEADERS[dow]}
-              </div>
-              <div
-                className={`mx-auto mt-0.5 w-7 h-7 flex items-center justify-center rounded-full text-sm font-semibold ${today ? 'bg-gray-900 text-white' : 'text-gray-700'}`}
-              >
-                {format(day, 'd')}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="flex-1 overflow-y-auto">
-        <div className="relative grid" style={{ gridTemplateColumns: `48px repeat(${days.length}, 1fr)` }}>
-          <div className="relative" style={{ gridColumn: 1, gridRow: '1 / span 96' }}>
-            {SLOTS.map(slot => {
-              const isHourStart = slot % 4 === 0;
-              const hour = Math.floor(slot / 4);
-              return (
-                <div
-                  key={`lbl-${slot}`}
-                  className={`h-3.5 flex items-start justify-end pr-2 border-r border-gray-200 ${isHourStart ? 'border-t border-gray-300' : ''}`}
-                >
-                  {isHourStart && (
-                    <span className="text-xs text-gray-500 -mt-2 leading-none">
-                      {String(hour).padStart(2, '0')}:00
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          {days.map((day, di) => {
-            const layout = layoutEventsForDay(events, day);
-            const isNowDay = isToday(day);
-
-            return (
-              <div
-                key={day.toISOString()}
-                className="relative border-r border-gray-200 last:border-r-0"
-                style={{ gridColumn: di + 2 }}
-              >
-                {SLOTS.map(slot => {
-                  const isHourStart = slot % 4 === 0;
-                  const isNow = isNowDay && nowSlot === slot;
-                  const dragging = isDragging(di, slot);
-                  return (
-                    <div
-                      key={slot}
-                      onMouseDown={e => onMouseDown(di, slot, e)}
-                      onMouseEnter={() => onMouseEnter(di, slot)}
-                      onClick={() => onClick(di, slot)}
-                      onContextMenu={e => {
-                        if (!onSlotContextMenu) return;
-                        e.preventDefault();
-                        onSlotContextMenu(slotToDate(days[di], slot), e.clientX, e.clientY, true);
-                      }}
-                      onDragOver={e => {
-                        if (!isFlancarDrag(e)) return;
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect = e.ctrlKey || e.metaKey ? 'copy' : 'move';
-                      }}
-                      onDrop={e => {
-                        if (!isFlancarDrag(e)) return;
-                        e.preventDefault();
-                        const id = Number(e.dataTransfer.getData(DRAG_MIME));
-                        if (!id || !onEventDrop) return;
-                        onEventDrop(id, slotToDate(days[di], slot), e.ctrlKey || e.metaKey, true);
-                      }}
-                      className={`h-3.5 cursor-pointer relative ${
-                        isHourStart ? 'border-t border-gray-300' : ''
-                      } ${dragging ? 'bg-blue-100' : 'hover:bg-gray-50'}`}
-                    >
-                      {isNow && (
-                        <div
-                          ref={nowRef}
-                          className="absolute left-0 right-0 border-t-2 border-red-400 z-10 pointer-events-none"
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-
-                {layout.map(({ event, col, totalCols, startSlot, endSlot }) => {
-                  const top = startSlot * SLOT_HEIGHT;
-                  const height = Math.max((endSlot - startSlot) * SLOT_HEIGHT, SLOT_HEIGHT * 2);
-                  const colW = 85 / totalCols;
-                  const left = col * colW + 1;
-                  const width = colW - 1;
-                  const bgColor = staffColors[event.staffId] ?? STATUS_COLOR_HEX[event.status];
-                  const totalPrice = event.items?.reduce((s, i) => s + i.unitPrice * i.quantity, 0) ?? 0;
-                  return (
-                    <div
-                      key={event.id}
-                      draggable
-                      onMouseDown={e => e.stopPropagation()}
-                      onDragStart={e => {
-                        e.stopPropagation();
-                        e.dataTransfer.setData(DRAG_MIME, String(event.id));
-                        e.dataTransfer.effectAllowed = 'copyMove';
-                      }}
-                      onContextMenu={e => {
-                        if (!onEventContextMenu) return;
-                        e.preventDefault();
-                        e.stopPropagation();
-                        onEventContextMenu(event, e.clientX, e.clientY);
-                      }}
-                      onClick={e => {
-                        e.stopPropagation();
-                        onEventClick?.(event);
-                      }}
-                      style={{ position: 'absolute', top, height, left: `${left}%`, width: `${width}%`, backgroundColor: bgColor }}
-                      className="rounded px-1 py-0.5 text-xs text-white cursor-pointer z-20 overflow-hidden shadow-sm hover:opacity-90 transition-opacity"
-                    >
-                      <div className="font-semibold truncate leading-tight">{event.title}</div>
-                      <div className="truncate opacity-90 leading-tight">
-                        {format(new Date(event.startAt), 'HH:mm')}–{format(new Date(event.endAt), 'HH:mm')} {event.customerName} / {event.requester} / ¥{totalPrice.toLocaleString()} / (TAX)¥{Math.floor(totalPrice * 0.1).toLocaleString()}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function MonthView({
-  anchor,
-  events,
-  staffColors,
-  onRangeSelect,
-  onEventClick,
-  onEventContextMenu,
-  onSlotContextMenu,
-  onEventDrop,
-}: {
-  anchor: Date;
-  events: CalendarEvent[];
-  staffColors: Record<string, string>;
-  onRangeSelect?: (start: Date, end: Date) => void;
-  onEventClick?: (event: CalendarEvent) => void;
-  onEventContextMenu?: (event: CalendarEvent, clientX: number, clientY: number) => void;
-  onSlotContextMenu?: (date: Date, clientX: number, clientY: number, granular: boolean) => void;
-  onEventDrop?: (eventId: number, droppedAt: Date, copy: boolean, granular: boolean) => void;
-}) {
-  const days = eachDayOfInterval({
-    start: startOfWeek(startOfMonth(anchor), { weekStartsOn: 0 }),
-    end: endOfWeek(endOfMonth(anchor), { weekStartsOn: 0 }),
-  });
-
-  const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const startLongPress = (day: Date) => {
-    longPressRef.current = setTimeout(() => {
-      const s = new Date(day);
-      s.setHours(9, 0, 0, 0);
-      const e = new Date(day);
-      e.setHours(10, 0, 0, 0);
-      onRangeSelect?.(s, e);
-    }, 500);
-  };
-
-  const cancelLongPress = () => {
-    if (longPressRef.current) clearTimeout(longPressRef.current);
-  };
-
-  const handleClick = (day: Date, inMonth: boolean) => {
-    if (!inMonth) return;
-    const s = new Date(day);
-    s.setHours(9, 0, 0, 0);
-    const e = new Date(day);
-    e.setHours(10, 0, 0, 0);
-    onRangeSelect?.(s, e);
-  };
-
-  return (
-    <div className="flex-1 border border-gray-100 rounded-2xl overflow-hidden flex flex-col">
-      <div className="grid grid-cols-7 border-b border-gray-100 shrink-0">
-        {DAY_HEADERS.map((d, i) => (
-          <div
-            key={d}
-            className={`py-2 text-center text-xs font-medium uppercase tracking-wider ${i === 0 ? 'text-red-400' : i === 6 ? 'text-blue-400' : 'text-gray-400'}`}
-          >
-            {d}
-          </div>
-        ))}
-      </div>
-      <div className="grid grid-cols-7 flex-1 overflow-y-auto" style={{ gridAutoRows: 'minmax(90px, 1fr)' }}>
-        {days.map(day => {
-          const dayEvents = eventsForDay(events, day);
-          const inMonth = isSameMonth(day, anchor);
-          const today = isToday(day);
-          const dow = day.getDay();
-          return (
-            <div
-              key={day.toISOString()}
-              onClick={() => handleClick(day, inMonth)}
-              onMouseDown={() => inMonth && startLongPress(day)}
-              onMouseUp={cancelLongPress}
-              onMouseLeave={cancelLongPress}
-              onTouchStart={() => inMonth && startLongPress(day)}
-              onTouchEnd={cancelLongPress}
-              onTouchMove={cancelLongPress}
-              onContextMenu={e => {
-                if (!onSlotContextMenu || !inMonth) return;
-                e.preventDefault();
-                onSlotContextMenu(day, e.clientX, e.clientY, false);
-              }}
-              onDragOver={e => {
-                if (!isFlancarDrag(e) || !inMonth) return;
-                e.preventDefault();
-                e.dataTransfer.dropEffect = e.ctrlKey || e.metaKey ? 'copy' : 'move';
-              }}
-              onDrop={e => {
-                if (!isFlancarDrag(e) || !inMonth) return;
-                e.preventDefault();
-                const id = Number(e.dataTransfer.getData(DRAG_MIME));
-                if (!id || !onEventDrop) return;
-                onEventDrop(id, day, e.ctrlKey || e.metaKey, false);
-              }}
-              className={`border-b border-r border-gray-100 p-1.5 transition-colors ${inMonth ? 'bg-white hover:bg-gray-50 cursor-pointer' : 'bg-gray-50/50 cursor-default'}`}
-            >
-              <div className="flex justify-end mb-1">
-                <span
-                  className={`text-xs font-medium w-6 h-6 flex items-center justify-center rounded-full ${today ? 'bg-gray-900 text-white' : !inMonth ? 'text-gray-300' : dow === 0 ? 'text-red-400' : dow === 6 ? 'text-blue-400' : 'text-gray-600'}`}
-                >
-                  {format(day, 'd')}
-                </span>
-              </div>
-              <div className="space-y-0.5">
-                {dayEvents.slice(0, 3).map(event => {
-                  const totalPrice = event.items?.reduce((s, i) => s + i.unitPrice * i.quantity, 0) ?? 0;
-                  return (
-                    <button
-                      key={event.id}
-                      type="button"
-                      draggable
-                      onMouseDown={e => e.stopPropagation()}
-                      onDragStart={e => {
-                        e.stopPropagation();
-                        e.dataTransfer.setData(DRAG_MIME, String(event.id));
-                        e.dataTransfer.effectAllowed = 'copyMove';
-                      }}
-                      onContextMenu={e => {
-                        if (!onEventContextMenu) return;
-                        e.preventDefault();
-                        e.stopPropagation();
-                        onEventContextMenu(event, e.clientX, e.clientY);
-                      }}
-                      onClick={e => {
-                        e.stopPropagation();
-                        onEventClick?.(event);
-                      }}
-                      style={{ backgroundColor: staffColors[event.staffId] ?? STATUS_COLOR_HEX[event.status] }}
-                      className="w-full text-left rounded px-1.5 py-0.5 text-xs text-white hover:opacity-80 transition-opacity"
-                    >
-                      <div className="font-semibold truncate">{event.title}</div>
-                      <div className="truncate opacity-90">
-                        {format(new Date(event.startAt), 'HH:mm')}–{format(new Date(event.endAt), 'HH:mm')} {event.customerName} / {event.requester} / ¥{totalPrice.toLocaleString()} / (TAX)¥{Math.floor(totalPrice * 0.1).toLocaleString()}
-                      </div>
-                    </button>
-                  );
-                })}
-                {dayEvents.length > 3 && (
-                  <div className="text-xs text-gray-400 px-1">+{dayEvents.length - 3} 件</div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
 }
 
 export default function Calendar({
@@ -537,9 +109,8 @@ export default function Calendar({
   const pathname = usePathname();
   const { anchor, setAnchor, view, setView } = useCalendar();
   const { user } = useAuth();
-  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [apiEvents, setApiEvents] = useState<CalendarEvent[]>([]);
   const [staffColors, setStaffColors] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(false);
   const [liveTick, setLiveTick] = useState(0);
 
   const switchTo = pathname.includes('/worker') ? '/clerk' : '/worker';
@@ -550,91 +121,24 @@ export default function Calendar({
   }, [refreshKey]);
 
   useEffect(() => {
-    const { from, to } = rangeForView(view, anchor);
-    setLoading(true);
-    getSchedulesByRange(from, to)
-      .then(setEvents)
-      .catch(() => setEvents([]))
-      .finally(() => setLoading(false));
+    getSchedulesByRange(rangeFor(view, anchor).from, rangeFor(view, anchor).to)
+      .then(setApiEvents)
+      .catch(() => setApiEvents([]));
   }, [view, anchor, refreshKey, liveTick]);
 
   useEffect(() => {
     const es = new EventSource('/schedules/stream', { withCredentials: true });
-    es.addEventListener('schedule', () => {
-      setLiveTick(t => t + 1);
-    });
-    es.onerror = () => {
-      // EventSource auto-reconnects; nothing to do
-    };
+    es.addEventListener('schedule', () => setLiveTick(t => t + 1));
     return () => es.close();
   }, []);
 
-  const navigate = (dir: 1 | -1) => {
-    if (view === 'day') setAnchor(dir === 1 ? addDays(anchor, 1) : subDays(anchor, 1));
-    else if (view === 'week') setAnchor(dir === 1 ? addWeeks(anchor, 1) : subWeeks(anchor, 1));
-    else setAnchor(dir === 1 ? addMonths(anchor, 1) : subMonths(anchor, 1));
-  };
-
-  const headerLabel = () => {
-    if (view === 'day') return format(anchor, 'yyyy年 M月 d日');
-    if (view === 'week') {
-      const from = startOfWeek(anchor, { weekStartsOn: 0 });
-      const to = endOfWeek(anchor, { weekStartsOn: 0 });
-      return `${format(from, 'yyyy年 M月 d日')} – ${format(to, 'M月 d日')}`;
-    }
-    return format(anchor, 'yyyy年 M月');
-  };
-
-  const prevLabel = view === 'day' ? '‹ 前日' : view === 'week' ? '‹ 前週' : '‹ 前月';
-  const nextLabel = view === 'day' ? '翌日 ›' : view === 'week' ? '翌週 ›' : '翌月 ›';
-
-  const weekDays = eachDayOfInterval({
-    start: startOfWeek(anchor, { weekStartsOn: 0 }),
-    end: endOfWeek(anchor, { weekStartsOn: 0 }),
-  });
+  const events = useMemo(
+    () => apiEvents.map(e => toRsEvent(e, staffColors)),
+    [apiEvents, staffColors],
+  );
 
   return (
     <div className="flex flex-col h-full gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => navigate(-1)}
-            className="rounded-xl border border-gray-200 px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-50 transition-colors"
-          >
-            {prevLabel}
-          </button>
-          <button
-            type="button"
-            onClick={() => setAnchor(new Date())}
-            className="rounded-xl border border-gray-200 px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-50 transition-colors"
-          >
-            今日
-          </button>
-          <button
-            type="button"
-            onClick={() => navigate(1)}
-            className="rounded-xl border border-gray-200 px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-50 transition-colors"
-          >
-            {nextLabel}
-          </button>
-          <h2 className="text-sm font-semibold text-gray-900">{headerLabel()}</h2>
-          {loading && <span className="text-xs text-gray-300">読み込み中...</span>}
-        </div>
-        <div className="flex rounded-xl border border-gray-200 overflow-hidden text-sm">
-          {(['day', 'week', 'month'] as CalendarView[]).map(v => (
-            <button
-              key={v}
-              type="button"
-              onClick={() => setView(v)}
-              className={`px-3 py-1.5 transition-colors ${view === v ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-50'}`}
-            >
-              {v === 'day' ? '日' : v === 'week' ? '週' : '月'}
-            </button>
-          ))}
-        </div>
-      </div>
-
       {user && user.roleId === '1' && (
         <Link
           href={switchTo}
@@ -654,42 +158,97 @@ export default function Calendar({
         <span className="text-gray-300">※ 担当者の色が設定されている場合はその色で表示</span>
       </div>
 
-      {view === 'month' && (
-        <MonthView
-          anchor={anchor}
-          events={events}
-          staffColors={staffColors}
-          onRangeSelect={onRangeSelect}
-          onEventClick={onEventClick}
-          onEventContextMenu={onEventContextMenu}
-          onSlotContextMenu={onSlotContextMenu}
-          onEventDrop={onEventDrop}
-        />
-      )}
-      {view === 'week' && (
-        <TimeGrid
-          days={weekDays}
-          events={events}
-          staffColors={staffColors}
-          onRangeSelect={onRangeSelect}
-          onEventClick={onEventClick}
-          onEventContextMenu={onEventContextMenu}
-          onSlotContextMenu={onSlotContextMenu}
-          onEventDrop={onEventDrop}
-        />
-      )}
-      {view === 'day' && (
-        <TimeGrid
-          days={[anchor]}
-          events={events}
-          staffColors={staffColors}
-          onRangeSelect={onRangeSelect}
-          onEventClick={onEventClick}
-          onEventContextMenu={onEventContextMenu}
-          onSlotContextMenu={onSlotContextMenu}
-          onEventDrop={onEventDrop}
-        />
-      )}
+      <RSCalendar<FlancarMeta>
+        events={events}
+        view={view as RSView}
+        onViewChange={v => setView(v)}
+        anchor={anchor}
+        onAnchorChange={setAnchor}
+        locale="ja"
+        theme="light"
+        weekStartsOn={0}
+        slotMinutes={15}
+        renderEvent={({ event, view: v }) => <FlancarEventChip event={event} view={v} />}
+        // Pure delegation — the host page owns all interaction handling.
+        onRangeSelect={
+          onRangeSelect
+            ? (info: RangeSelectInfo) => onRangeSelect(info.start, info.end)
+            : null
+        }
+        onEventClick={
+          onEventClick ? (e: RSCalendarEvent<FlancarMeta>) => onEventClick(fromRsEvent(e)) : null
+        }
+        onEventContextMenu={
+          onEventContextMenu
+            ? (e, x, y) => onEventContextMenu(fromRsEvent(e), x, y)
+            : null
+        }
+        onSlotContextMenu={
+          onSlotContextMenu ? (d, x, y, g) => onSlotContextMenu(d, x, y, g) : null
+        }
+        onEventDrop={
+          onEventDrop
+            ? (info: EventDropInfo<FlancarMeta>) =>
+                onEventDrop(Number(info.event.id), info.newStart, info.copy, info.granular)
+            : null
+        }
+        // Disable the package's built-in popovers — Worker page opens the
+        // ScheduleFormModal instead via the click/range-select callbacks above.
+        disableCreatePopover
+        disableEditPopover
+      />
     </div>
   );
+}
+
+function FlancarEventChip({
+  event,
+  view,
+}: {
+  event: RSCalendarEvent<FlancarMeta>;
+  view: 'day' | 'week' | 'month';
+}) {
+  const start = new Date(event.start);
+  const end = new Date(event.end);
+  const totalPrice = event.meta?.items?.reduce((s, i) => s + i.unitPrice * i.quantity, 0) ?? 0;
+  const tax = Math.floor(totalPrice * 0.1);
+  return (
+    <>
+      <div className="font-semibold truncate leading-tight">{event.title}</div>
+      <div className="truncate opacity-90 leading-tight">
+        {format(start, 'HH:mm')}–{format(end, 'HH:mm')} {event.meta?.customerName} / {event.meta?.requester} / ¥{totalPrice.toLocaleString()} / (TAX)¥{tax.toLocaleString()}
+        {view === 'month' ? '' : ''}
+      </div>
+    </>
+  );
+}
+
+// Calculate the visible date range that the API should be queried for.
+function rangeFor(view: 'day' | 'week' | 'month', anchor: Date): { from: Date; to: Date } {
+  const d = new Date(anchor);
+  if (view === 'day') {
+    const from = new Date(d);
+    from.setHours(0, 0, 0, 0);
+    const to = new Date(from);
+    to.setDate(to.getDate() + 1);
+    return { from, to };
+  }
+  if (view === 'week') {
+    const from = new Date(d);
+    from.setDate(d.getDate() - d.getDay());
+    from.setHours(0, 0, 0, 0);
+    const to = new Date(from);
+    to.setDate(to.getDate() + 7);
+    return { from, to };
+  }
+  // month: first day of month → last day of month, padded to whole weeks
+  const firstOfMonth = new Date(d.getFullYear(), d.getMonth(), 1);
+  const lastOfMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  const from = new Date(firstOfMonth);
+  from.setDate(firstOfMonth.getDate() - firstOfMonth.getDay());
+  from.setHours(0, 0, 0, 0);
+  const to = new Date(lastOfMonth);
+  to.setDate(lastOfMonth.getDate() + (6 - lastOfMonth.getDay()));
+  to.setHours(23, 59, 59, 999);
+  return { from, to };
 }
