@@ -60,6 +60,26 @@ export default function Navbar() {
     }
   };
 
+  const handleGooglePoll = async () => {
+    setSyncing(true);
+    try {
+      const res = await axios.post(
+        '/google/poll',
+        {},
+        { withCredentials: true },
+      );
+      const { imported, skipped, calendars } = res.data ?? {};
+      toast.success(
+        `Googleカレンダー取込: 新規 ${imported ?? 0} 件 / スキップ ${skipped ?? 0} 件 (${calendars ?? 0} カレンダー)`,
+      );
+    } catch {
+      toast.error('Googleカレンダー取込に失敗しました。');
+    } finally {
+      setSyncing(false);
+      setMenuOpen(false);
+    }
+  };
+
   const handleLogout = async () => {
     await logout().catch(() => undefined);
     localStorage.removeItem('user');
@@ -115,6 +135,14 @@ export default function Navbar() {
                 className="shrink-0 rounded-xl border border-gray-200 px-3 py-2 text-gray-500 transition-colors hover:bg-gray-50 disabled:opacity-50"
               >
                 {syncing ? '会員DB同期中...' : '会員db同期'}
+              </button>
+              <button
+                type="button"
+                onClick={handleGooglePoll}
+                disabled={syncing}
+                className="shrink-0 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50"
+              >
+                {syncing ? '取込中...' : 'Google取込'}
               </button>
             </>
           )}
@@ -184,6 +212,14 @@ export default function Navbar() {
                     className="border-b border-gray-100 px-4 py-3 text-left text-sm text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-50"
                   >
                     {syncing ? '会員DB同期中...' : '会員db同期'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleGooglePoll}
+                    disabled={syncing}
+                    className="border-b border-gray-100 px-4 py-3 text-left text-sm text-amber-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    {syncing ? '取込中...' : 'Google取込'}
                   </button>
                 </>
               )}

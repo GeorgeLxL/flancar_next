@@ -74,9 +74,23 @@ CREATE TABLE IF NOT EXISTS "Schedule" (
   "showComiPack" BOOLEAN NOT NULL DEFAULT FALSE,
   "pdfNumber" TEXT UNIQUE,
   "status" "ScheduleStatus" NOT NULL DEFAULT 'draft',
+  "googleEventId" TEXT,
+  "googleCalendarId" TEXT,
+  "googleSyncedAt" TIMESTAMPTZ,
+  "googleSyncError" TEXT,
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Idempotent column adds for existing databases.
+ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "googleEventId" TEXT;
+ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "googleCalendarId" TEXT;
+ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "googleSyncedAt" TIMESTAMPTZ;
+ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "googleSyncError" TEXT;
+
+-- Unique partial index so a given Google event can only ever map to one Schedule.
+-- Phase 2 (Google → App) relies on this for idempotent imports.
+CREATE UNIQUE INDEX IF NOT EXISTS "Schedule_googleEventId_unique"
+  ON "Schedule" ("googleEventId") WHERE "googleEventId" IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS "ScheduleItem" (
   "id" SERIAL PRIMARY KEY,

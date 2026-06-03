@@ -1,0 +1,245 @@
+/**
+ * Phase 2: Google Calendar → FlanCar import.
+ *
+ * Polls every shared sub-calendar for events updated in the last N minutes
+ * whose title starts with the configured prefix marker (default `見積:`).
+ * Imports each as a draft Schedule, with smart matching of product /
+ * customer abbreviations against the cached Smaregi DB.
+ *
+ * Idempotent via the unique partial index on Schedule.googleEventId.
+ */
+
+import { getCalendarClient, googleConfigured } from './google';
+import { query, queryOne } from './db';
+import { createSchedule } from './schedules';
+import type { calendar_v3 } from 'googleapis';
+
+const DEFAULT_PREFIX = '見積:';
+/** Look back further than the poll interval so a slow Google update isn't missed. */
+const LOOKBACK_MS = 30 * 60 * 1000;
+
+export interface ImportResult {
+  scanned: number;
+  imported: number;
+  skipped: number;
+  errors: number;
+  calendars: number;
+}
+
+interface ParsedTitle {
+  carType: string;
+  productCodes: string[];
+}
+
+interface ParsedLocation {
+  customerAbbrev: string;
+  requester: string;
+  amount: number;
+}
+
+export function parseEventTitle(rawTitle: string, prefix: string): ParsedTitle {
+  let t = rawTitle.trim();
+  if (prefix && t.startsWith(prefix)) t = t.slice(prefix.length).trim();
+  // Some users add a space after the marker (e.g. `見積: ABC123`).
+  const tokens = t.split(/[\s/、]+/).filter(Boolean);
+  if (tokens.length === 0) return { carType: '', productCodes: [] };
+  return { carType: tokens[0], productCodes: tokens.slice(1) };
+}
+
+export function parseEventLocation(rawLocation: string): ParsedLocation {
+  const trimmed = (rawLocation ?? '').trim();
+  if (!trimmed) return { customerAbbrev: '', requester: '', amount: 0 };
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  // Find the last token containing digits; treat as the price.
+  let amount = 0;
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const m = tokens[i].match(/(\d[\d,]*)/);
+    if (m) {
+      amount = Number(m[1].replace(/,/g, ''));
+      tokens.splice(i, 1);
+      break;
+    }
+  }
+  return {
+    customerAbbrev: tokens[0] ?? '',
+    requester: tokens.slice(1).join(' '),
+    amount,
+  };
+}
+
+interface ProductMatch {
+  productId: string;
+  categoryId: string;
+  unitPrice: number;
+}
+
+/**
+ * Try to find ONE Smaregi product matching a short code. Multiple hits or
+ * none = returns null (the worker will pick manually).
+ */
+async function matchProductByCode(code: string): Promise<ProductMatch | null> {
+  if (!code) return null;
+  const like = `%${code}%`;
+  const rows = await query<ProductMatch>(
+    `SELECT "productId", "categoryId", "unitPrice"
+       FROM "Product"
+      WHERE "productName" ILIKE $1 OR "productId" ILIKE $1
+      LIMIT 2`,
+    [like],
+  );
+  return rows.length === 1 ? rows[0] : null;
+}
+
+interface CustomerMatch {
+  customerId: string;
+}
+
+async function matchCustomerByAbbrev(abbrev: string): Promise<CustomerMatch | null> {
+  if (!abbrev) return null;
+  const like = `%${abbrev}%`;
+  const rows = await query<CustomerMatch>(
+    `SELECT "customerId"
+       FROM "Customer"
+      WHERE "customerName" ILIKE $1
+      LIMIT 2`,
+    [like],
+  );
+  return rows.length === 1 ? rows[0] : null;
+}
+
+async function alreadyImported(eventId: string): Promise<boolean> {
+  const row = await queryOne<{ id: number }>(
+    `SELECT id FROM "Schedule" WHERE "googleEventId" = $1`,
+    [eventId],
+  );
+  return row !== null;
+}
+
+interface ImportContext {
+  prefix: string;
+  calendarSummary: string;
+  calendarId: string;
+}
+
+async function importEvent(
+  event: calendar_v3.Schema$Event,
+  ctx: ImportContext,
+): Promise<'imported' | 'skipped'> {
+  if (!event.id) return 'skipped';
+  const title = event.summary ?? '';
+  if (!title.trim().startsWith(ctx.prefix)) return 'skipped';
+  if (await alreadyImported(event.id)) return 'skipped';
+
+  const titleP = parseEventTitle(title, ctx.prefix);
+  const locP = parseEventLocation(event.location ?? '');
+
+  // Resolve customer (1 hit only — otherwise leave for manual selection).
+  const matchedCustomer = await matchCustomerByAbbrev(locP.customerAbbrev);
+
+  // Resolve each product code — keep matches, drop unmatched.
+  const items = [];
+  for (const code of titleP.productCodes) {
+    const product = await matchProductByCode(code);
+    if (product) {
+      items.push({
+        productId: product.productId,
+        categoryId: product.categoryId,
+        unitPrice: product.unitPrice,
+        quantity: 1,
+      });
+    }
+  }
+
+  const start = event.start?.dateTime ?? event.start?.date;
+  const end = event.end?.dateTime ?? event.end?.date;
+  if (!start || !end) return 'skipped';
+
+  await createSchedule(
+    {
+      title: title.trim(),
+      carType: titleP.carType,
+      description: event.description ?? '',
+      startAt: new Date(start).toISOString(),
+      endAt: new Date(end).toISOString(),
+      customerId: matchedCustomer?.customerId ?? '',
+      // staffId is left blank — worker picks the matching Smaregi staff.
+      // Calendar summary is the most reliable hint to populate staffName.
+      staffId: '',
+      staffName: ctx.calendarSummary,
+      customer: '',
+      requester: locP.requester,
+      showComiPack: true,
+      status: 'draft',
+    },
+    items,
+    { google: { eventId: event.id, calendarId: ctx.calendarId } },
+  );
+
+  return 'imported';
+}
+
+/**
+ * Poll all sub-calendars shared with the service account and import any new
+ * matching events. Safe to run repeatedly — dupes are blocked by the unique
+ * googleEventId index.
+ */
+export async function pollGoogleCalendars(): Promise<ImportResult> {
+  const result: ImportResult = { scanned: 0, imported: 0, skipped: 0, errors: 0, calendars: 0 };
+  if (!googleConfigured()) return result;
+
+  const prefix = (process.env.GOOGLE_CALENDAR_TITLE_PREFIX ?? DEFAULT_PREFIX).trim() || DEFAULT_PREFIX;
+  const calendar = getCalendarClient();
+  const updatedMin = new Date(Date.now() - LOOKBACK_MS).toISOString();
+
+  // List all calendars accessible to the service account.
+  const calendarList: Array<{ id: string; summary: string }> = [];
+  let pageToken: string | undefined;
+  do {
+    const res = await calendar.calendarList.list({ pageToken, maxResults: 250 });
+    for (const item of res.data.items ?? []) {
+      if (item.id && item.summary) calendarList.push({ id: item.id, summary: item.summary });
+    }
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  result.calendars = calendarList.length;
+
+  for (const cal of calendarList) {
+    try {
+      let evToken: string | undefined;
+      do {
+        const evRes = await calendar.events.list({
+          calendarId: cal.id,
+          updatedMin,
+          singleEvents: true,
+          showDeleted: false,
+          maxResults: 250,
+          pageToken: evToken,
+          // q would let Google filter server-side by text, but the prefix can
+          // be ambiguous in `q`; we do the filter ourselves below.
+        });
+        for (const ev of evRes.data.items ?? []) {
+          result.scanned++;
+          try {
+            const outcome = await importEvent(ev, {
+              prefix,
+              calendarSummary: cal.summary,
+              calendarId: cal.id,
+            });
+            if (outcome === 'imported') result.imported++;
+            else result.skipped++;
+          } catch (err) {
+            result.errors++;
+            console.error('Google import event failed:', err);
+          }
+        }
+        evToken = evRes.data.nextPageToken ?? undefined;
+      } while (evToken);
+    } catch (err) {
+      result.errors++;
+      console.error(`Google calendar poll failed for ${cal.summary}:`, err);
+    }
+  }
+
+  return result;
+}

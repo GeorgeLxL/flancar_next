@@ -379,7 +379,7 @@ function SchedulePDFPage({
   );
 }
 
-function SchedulePDF({
+export function SchedulePDF({
   schedule,
   pageCount,
   quotedDate,
@@ -399,7 +399,7 @@ function SchedulePDF({
 }
 
 let fontRegistered = false;
-function ensureFont() {
+export function ensureFont() {
   if (fontRegistered || typeof window === 'undefined') return;
   const origin = window.location.origin;
   // Register Regular + Bold so bold runs don't fall back to a font without
