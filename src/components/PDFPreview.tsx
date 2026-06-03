@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { format } from 'date-fns';
-import { BlobProvider, Document, Font, Image, Page, StyleSheet, Text, View } from '@react-pdf/renderer';
+import { BlobProvider, Document, Font, Image, Page, StyleSheet, Text, View, pdf } from '@react-pdf/renderer';
+import toast from 'react-hot-toast';
+import Swal from 'sweetalert2';
 
 const PDF_TYPES = {
   estimate: '御 見 積 書',
@@ -419,11 +421,13 @@ function ensureFont() {
 export default function PDFPreview({
   schedule,
   status = 'draft',
+  defaultFaxNumber = '',
   onSendPdf,
 }: {
   schedule: Schedule;
   status?: ScheduleStatus;
-  onSendPdf?: () => Promise<void> | void;
+  defaultFaxNumber?: string;
+  onSendPdf?: (faxId: string) => Promise<void> | void;
 }) {
   const [pageCount, setPageCount] = useState<PdfPageCount>(1);
   const [sending, setSending] = useState(false);
@@ -440,10 +444,57 @@ export default function PDFPreview({
   );
 
   const handleSendFax = async () => {
-    if (!onSendPdf) return;
+    // Always confirm the recipient number; pre-fill from the linked customer.
+    const result = await Swal.fire({
+      title: 'eFaxで送信',
+      html: '<p style="font-size:13px;color:#6b7280;margin-bottom:8px;">送信先のFAX番号を確認してください。</p>',
+      input: 'tel',
+      inputValue: defaultFaxNumber,
+      inputPlaceholder: '例: 03-1234-5678',
+      showCancelButton: true,
+      confirmButtonText: '送信',
+      cancelButtonText: 'キャンセル',
+      confirmButtonColor: '#16a34a',
+      cancelButtonColor: '#64748b',
+      reverseButtons: true,
+      inputValidator: value => {
+        if (!value || !value.trim()) return 'FAX番号を入力してください';
+        return null;
+      },
+    });
+    if (!result.isConfirmed || !result.value) return;
+    const to = String(result.value).trim();
+
     setSending(true);
-    await onSendPdf();
-    setSending(false);
+    try {
+      // FAX is always the 1-page (見積書) version regardless of what the
+      // preview is currently showing.
+      const faxDoc = (
+        <SchedulePDF schedule={schedule} pageCount={1} quotedDate={quotedDate} />
+      );
+      const blob = await pdf(faxDoc).toBlob();
+
+      const form = new FormData();
+      form.append('pdf', blob, fileName);
+      form.append('scheduleId', String(schedule.id));
+      form.append('to', to);
+
+      const res = await fetch('/fax/send', {
+        method: 'POST',
+        credentials: 'include',
+        body: form,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? 'Fax send failed');
+
+      toast.success('eFaxを送信しました。');
+      await onSendPdf?.(String(data.faxId ?? ''));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'eFax送信に失敗しました。';
+      toast.error(msg);
+    } finally {
+      setSending(false);
+    }
   };
 
   const sendLabel = status === 'pending' ? '再送信' : 'eFaxで送信';

@@ -36,8 +36,11 @@ CREATE TABLE IF NOT EXISTS "Customer" (
   "id" SERIAL PRIMARY KEY,
   "customerId" TEXT NOT NULL UNIQUE,
   "customerName" TEXT NOT NULL,
+  "faxNumber" TEXT NOT NULL DEFAULT '',
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Idempotent column add for existing databases.
+ALTER TABLE "Customer" ADD COLUMN IF NOT EXISTS "faxNumber" TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS "Category" (
   "id" SERIAL PRIMARY KEY,

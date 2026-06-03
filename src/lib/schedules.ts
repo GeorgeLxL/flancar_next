@@ -99,8 +99,8 @@ async function loadScheduleAggregate(id: number) {
     [id],
   );
 
-  const customer = await queryOne<{ customerName: string }>(
-    `SELECT "customerName" FROM "Customer" WHERE "customerId" = $1`,
+  const customer = await queryOne<{ customerName: string; faxNumber: string | null }>(
+    `SELECT "customerName", "faxNumber" FROM "Customer" WHERE "customerId" = $1`,
     [schedule.customerId],
   );
 
@@ -116,6 +116,7 @@ async function loadScheduleAggregate(id: number) {
   return {
     ...schedule,
     customerName: customer?.customerName ?? '',
+    customerFaxNumber: customer?.faxNumber ?? '',
     items: items.map(i => ({
       id: i.id,
       scheduleId: i.scheduleId,

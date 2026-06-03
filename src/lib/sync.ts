@@ -152,14 +152,19 @@ export async function syncCustomers(accessToken: string) {
       firstName?: string;
       customerName?: string;
       name?: string;
+      faxNumber?: string;
+      fax?: string;
+      faxNo?: string;
     };
-    const raw = await fetchAllPages<RawCustomer>(api, `/${contractId}/pos/customers`, lastMonthRange());
+    const raw = await fetchAllPages<RawCustomer>(api, `/${contractId}/pos/customers`);
     const customers = raw
       .map(c => {
         const fullName = `${c.lastName ?? ''} ${c.firstName ?? ''}`.trim();
         return {
           customerId: String(c.customerId ?? c.memberNo ?? ''),
           customerName: String(c.companyName ?? (fullName || c.customerName || c.name || '')),
+          // Smaregi uses slightly different field names across endpoints / accounts
+          faxNumber: String(c.faxNumber ?? c.fax ?? c.faxNo ?? '').trim(),
         };
       })
       .filter(c => c.customerId);
@@ -167,11 +172,13 @@ export async function syncCustomers(accessToken: string) {
     await withTransaction(async client => {
       for (const c of customers) {
         await client.query(
-          `INSERT INTO "Customer" ("customerId", "customerName", "updatedAt")
-           VALUES ($1, $2, NOW())
+          `INSERT INTO "Customer" ("customerId", "customerName", "faxNumber", "updatedAt")
+           VALUES ($1, $2, $3, NOW())
            ON CONFLICT ("customerId") DO UPDATE
-             SET "customerName" = EXCLUDED."customerName", "updatedAt" = NOW()`,
-          [c.customerId, c.customerName],
+             SET "customerName" = EXCLUDED."customerName",
+                 "faxNumber" = EXCLUDED."faxNumber",
+                 "updatedAt" = NOW()`,
+          [c.customerId, c.customerName, c.faxNumber],
         );
       }
     });
