@@ -14,6 +14,7 @@ type ScheduleStatus = 'draft' | 'pending' | 'sent' | 'finished';
 type PreviewScheduleWithMeta = PreviewSchedule & {
   id: number;
   status: ScheduleStatus;
+  customerFaxNumber?: string;
 };
 
 export default function ClerkPage() {
@@ -87,16 +88,13 @@ function Clerk() {
     setSelected(null);
   };
 
+  // PDFPreview now performs the actual Telnyx send and updates the schedule
+  // status server-side. This callback just reflects the new state locally and
+  // closes the preview.
   const handleSendPdf = async () => {
     if (!selected) return;
-    try {
-      const updated = await updateScheduleStatus(selected.id, 'pending');
-      syncLocalStatus(selected.id, updated.status);
-      toast.success('PDFを送信しました。');
-      closeSelected();
-    } catch {
-      toast.error('PDF送信に失敗しました。');
-    }
+    syncLocalStatus(selected.id, 'pending');
+    closeSelected();
   };
 
   const handleFinishSchedule = async (id: number) => {
@@ -188,7 +186,11 @@ function Clerk() {
                 )}
               </div>
             </div>
-            <PDFPreview schedule={selected} status={selected.status} onSendPdf={handleSendPdf} />
+            <PDFPreview
+              schedule={selected}
+              status={selected.status}
+              onSendPdf={handleSendPdf}
+            />
           </div>
         </div>
       )}

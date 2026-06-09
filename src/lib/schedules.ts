@@ -1,5 +1,11 @@
 import { format } from 'date-fns';
 import { query, queryOne, withTransaction } from './db';
+import {
+  createScheduleEvent,
+  deleteScheduleEvent,
+  updateScheduleEvent,
+} from './google-sync';
+import { googleConfigured } from './google';
 
 export type ScheduleStatus = 'draft' | 'pending' | 'sent' | 'finished';
 
@@ -18,6 +24,10 @@ interface ScheduleRow {
   showComiPack: boolean;
   pdfNumber: string | null;
   status: ScheduleStatus;
+  googleEventId: string | null;
+  googleCalendarId: string | null;
+  googleSyncedAt: Date | null;
+  googleSyncError: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -99,8 +109,8 @@ async function loadScheduleAggregate(id: number) {
     [id],
   );
 
-  const customer = await queryOne<{ customerName: string }>(
-    `SELECT "customerName" FROM "Customer" WHERE "customerId" = $1`,
+  const customer = await queryOne<{ customerName: string; faxNumber: string | null }>(
+    `SELECT "customerName", "faxNumber" FROM "Customer" WHERE "customerId" = $1`,
     [schedule.customerId],
   );
 
@@ -116,6 +126,7 @@ async function loadScheduleAggregate(id: number) {
   return {
     ...schedule,
     customerName: customer?.customerName ?? '',
+    customerFaxNumber: customer?.faxNumber ?? '',
     items: items.map(i => ({
       id: i.id,
       scheduleId: i.scheduleId,
@@ -220,7 +231,73 @@ export async function getSchedule(id: number) {
   return loadScheduleAggregate(id);
 }
 
-export async function createSchedule(input: ScheduleInput, items: ScheduleItemInput[]) {
+// ── Google Calendar sync helpers ───────────────────────────────────────────
+// Sync is fire-and-forget: local DB stays the source of truth. We record the
+// result on the row (eventId / syncedAt / syncError) for diagnostics.
+
+async function recordSyncResult(
+  id: number,
+  ok: boolean,
+  eventId?: string | null,
+  calendarId?: string | null,
+  error?: string | null,
+) {
+  await query(
+    `UPDATE "Schedule"
+        SET "googleEventId"   = COALESCE($2, "googleEventId"),
+            "googleCalendarId"= COALESCE($3, "googleCalendarId"),
+            "googleSyncedAt"  = CASE WHEN $4 THEN NOW() ELSE "googleSyncedAt" END,
+            "googleSyncError" = $5
+      WHERE id = $1`,
+    [id, eventId ?? null, calendarId ?? null, ok, error ?? null],
+  );
+}
+
+async function syncToGoogleAfterCreate(id: number): Promise<void> {
+  if (!googleConfigured()) return;
+  const schedule = await loadScheduleAggregate(id);
+  if (!schedule) return;
+  const result = await createScheduleEvent(schedule);
+  await recordSyncResult(id, result.ok, result.eventId, result.calendarId, result.error);
+}
+
+async function syncToGoogleAfterUpdate(id: number): Promise<void> {
+  if (!googleConfigured()) return;
+  const row = await queryOne<{ googleEventId: string | null; googleCalendarId: string | null }>(
+    `SELECT "googleEventId", "googleCalendarId" FROM "Schedule" WHERE id = $1`,
+    [id],
+  );
+  const schedule = await loadScheduleAggregate(id);
+  if (!schedule) return;
+  const result =
+    row?.googleEventId && row?.googleCalendarId
+      ? await updateScheduleEvent(schedule, { eventId: row.googleEventId, calendarId: row.googleCalendarId })
+      : await createScheduleEvent(schedule);
+  await recordSyncResult(id, result.ok, result.eventId, result.calendarId, result.error);
+}
+
+async function syncToGoogleAfterDelete(
+  current: { eventId: string | null; calendarId: string | null },
+): Promise<void> {
+  if (!googleConfigured()) return;
+  if (!current.eventId || !current.calendarId) return;
+  await deleteScheduleEvent({ eventId: current.eventId, calendarId: current.calendarId });
+}
+
+export interface CreateScheduleOptions {
+  /**
+   * If set, the schedule is being imported FROM Google and we already know
+   * the event/calendar it corresponds to. Stops the create-side push from
+   * looping back to Google.
+   */
+  google?: { eventId: string; calendarId: string };
+}
+
+export async function createSchedule(
+  input: ScheduleInput,
+  items: ScheduleItemInput[],
+  options: CreateScheduleOptions = {},
+) {
   const data = sanitizeSchedule(input);
   const sItems = sanitizeItems(items);
   const dateStr = format(new Date(), 'MMdd');
@@ -238,8 +315,10 @@ export async function createSchedule(input: ScheduleInput, items: ScheduleItemIn
     const inserted = await client.query<ScheduleRow>(
       `INSERT INTO "Schedule"
          (title, "carType", description, "startAt", "endAt", "customerId", "staffId", "staffName",
-          customer, requester, "showComiPack", "pdfNumber", status, "updatedAt")
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, NOW())
+          customer, requester, "showComiPack", "pdfNumber", status,
+          "googleEventId", "googleCalendarId", "googleSyncedAt", "updatedAt")
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+               CASE WHEN $14::text IS NOT NULL THEN NOW() ELSE NULL END, NOW())
        RETURNING *`,
       [
         data.title,
@@ -255,6 +334,8 @@ export async function createSchedule(input: ScheduleInput, items: ScheduleItemIn
         data.showComiPack,
         pdfNumber,
         data.status,
+        options.google?.eventId ?? null,
+        options.google?.calendarId ?? null,
       ],
     );
     const id = inserted.rows[0].id;
@@ -267,7 +348,14 @@ export async function createSchedule(input: ScheduleInput, items: ScheduleItemIn
       );
     }
     return id;
-  }).then(id => loadScheduleAggregate(id));
+  }).then(async id => {
+    const aggregate = await loadScheduleAggregate(id);
+    // Don't push back to Google for events that came FROM Google.
+    if (!options.google) {
+      void syncToGoogleAfterCreate(id).catch(err => console.error('Google sync (create) failed:', err));
+    }
+    return aggregate;
+  });
 }
 
 export async function updateSchedule(id: number, input: ScheduleInput, items: ScheduleItemInput[]) {
@@ -308,11 +396,24 @@ export async function updateSchedule(id: number, input: ScheduleInput, items: Sc
       );
     }
   });
-  return loadScheduleAggregate(id);
+  const aggregate = await loadScheduleAggregate(id);
+  void syncToGoogleAfterUpdate(id).catch(err => console.error('Google sync (update) failed:', err));
+  return aggregate;
 }
 
 export async function deleteSchedule(id: number) {
+  // Read the Google linkage before we drop the row.
+  const existing = await queryOne<{ googleEventId: string | null; googleCalendarId: string | null }>(
+    `SELECT "googleEventId", "googleCalendarId" FROM "Schedule" WHERE id = $1`,
+    [id],
+  );
   const result = await query(`DELETE FROM "Schedule" WHERE id = $1 RETURNING id`, [id]);
+  if (result.length > 0 && existing) {
+    void syncToGoogleAfterDelete({
+      eventId: existing.googleEventId,
+      calendarId: existing.googleCalendarId,
+    }).catch(err => console.error('Google sync (delete) failed:', err));
+  }
   return result.length > 0;
 }
 

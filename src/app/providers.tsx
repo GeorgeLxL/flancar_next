@@ -4,11 +4,13 @@ import { Toaster } from 'react-hot-toast';
 import 'sweetalert2/dist/sweetalert2.min.css';
 import { AuthProvider } from '@/components/AuthContext';
 import { CalendarProvider } from '@/components/CalendarContext';
+import GoogleAutoPoll from '@/components/GoogleAutoPoll';
 
 export default function Providers({ children }: { children: React.ReactNode }) {
   return (
     <AuthProvider>
       <CalendarProvider>
+        <GoogleAutoPoll />
         {children}
         <Toaster
           position="top-right"

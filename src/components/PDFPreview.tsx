@@ -377,7 +377,7 @@ function SchedulePDFPage({
   );
 }
 
-function SchedulePDF({
+export function SchedulePDF({
   schedule,
   pageCount,
   quotedDate,
@@ -397,7 +397,7 @@ function SchedulePDF({
 }
 
 let fontRegistered = false;
-function ensureFont() {
+export function ensureFont() {
   if (fontRegistered || typeof window === 'undefined') return;
   const origin = window.location.origin;
   // Register Regular + Bold so bold runs don't fall back to a font without
@@ -423,10 +423,10 @@ export default function PDFPreview({
 }: {
   schedule: Schedule;
   status?: ScheduleStatus;
+  /** Reserved for the upcoming netfax.jp integration. Currently unused. */
   onSendPdf?: () => Promise<void> | void;
 }) {
   const [pageCount, setPageCount] = useState<PdfPageCount>(1);
-  const [sending, setSending] = useState(false);
   const [quotedDate, setQuotedDate] = useState('');
 
   useEffect(() => {
@@ -439,30 +439,15 @@ export default function PDFPreview({
     [schedule, pageCount, quotedDate],
   );
 
-  const handleSendFax = async () => {
-    if (!onSendPdf) return;
-    setSending(true);
-    await onSendPdf();
-    setSending(false);
-  };
-
-  const sendLabel = status === 'pending' ? '再送信' : 'eFaxで送信';
-  const canSend = status !== 'finished';
+  // Reference the prop so TS doesn't complain while the eFax UI is between
+  // implementations (Telnyx removed; netfax.jp pending).
+  void onSendPdf;
+  void status;
 
   return (
     <div className="mx-auto max-w-6xl p-6" onClick={event => event.stopPropagation()}>
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-bold">PDF プレビュー</h1>
-        {canSend && (
-          <button
-            type="button"
-            onClick={handleSendFax}
-            disabled={sending}
-            className="rounded-xl bg-green-600 px-6 py-2 text-white hover:bg-green-700 disabled:opacity-50"
-          >
-            {sending ? '送信中...' : sendLabel}
-          </button>
-        )}
       </div>
       <div className="mb-4 grid grid-cols-1 items-center gap-4 sm:grid-cols-2">
         <div className="flex gap-2">

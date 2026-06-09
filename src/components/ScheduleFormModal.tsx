@@ -8,8 +8,10 @@ import Select from 'react-select';
 import AsyncSelect from 'react-select/async';
 import toast from 'react-hot-toast';
 import Swal from 'sweetalert2';
+import { pdf } from '@react-pdf/renderer';
 import { scheduleSchema, type ScheduleFormData } from '@/schemas/schedule';
 import { useAuth } from './AuthContext';
+import { SchedulePDF, ensureFont, type Schedule as PDFSchedule } from './PDFPreview';
 import {
   createSchedule,
   deleteSchedule,
@@ -149,6 +151,18 @@ interface CustomerOption {
   label: string;
 }
 
+async function attachPdfToGoogleEvent(scheduleId: number, schedule: PDFSchedule) {
+  // Need fonts registered before rendering — same call PDFPreview makes.
+  ensureFont();
+  const doc = <SchedulePDF schedule={schedule} pageCount={4} quotedDate="" />;
+  const blob = await pdf(doc).toBlob();
+  const fileName = `${schedule.customerName || 'schedule'}_${schedule.pdfNumber ?? scheduleId}.pdf`;
+  const form = new FormData();
+  form.append('pdf', blob, fileName);
+  form.append('scheduleId', String(scheduleId));
+  await fetch('/google/attach-pdf', { method: 'POST', credentials: 'include', body: form });
+}
+
 export default function ScheduleFormModal({
   scheduleId,
   defaultDate,
@@ -269,6 +283,15 @@ export default function ScheduleFormModal({
       toast.success(isEdit ? 'スケジュールを更新しました。' : 'スケジュールを作成しました。');
       const savedId = Number((saved as { id?: number } | undefined)?.id ?? scheduleId ?? 0);
       onSaved(savedId);
+
+      // Fire-and-forget: render the 4-page PDF and attach it to the saved
+      // schedule's Google Calendar event. Doesn't block the UI; failures only
+      // show up in the console (and on the row's googleSyncError column).
+      if (savedId && saved) {
+        void attachPdfToGoogleEvent(savedId, saved as unknown as PDFSchedule).catch(err =>
+          console.error('Google PDF attach failed:', err),
+        );
+      }
     } catch {
       toast.error('保存に失敗しました。');
     }
