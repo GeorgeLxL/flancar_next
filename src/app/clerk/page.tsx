@@ -189,7 +189,6 @@ function Clerk() {
             <PDFPreview
               schedule={selected}
               status={selected.status}
-              defaultFaxNumber={selected.customerFaxNumber}
               onSendPdf={handleSendPdf}
             />
           </div>
