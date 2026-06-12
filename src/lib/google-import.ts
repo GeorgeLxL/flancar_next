@@ -2,9 +2,9 @@
  * Phase 2: Google Calendar → FlanCar import.
  *
  * Polls every shared sub-calendar for events updated in the last N minutes
- * whose title starts with the configured prefix marker (default `見積:`).
- * Imports each as a draft Schedule, with smart matching of product /
- * customer abbreviations against the cached Smaregi DB.
+ * whose title starts with one of the configured prefix markers
+ * (default: `商,サ,新,見`). Imports each as a draft Schedule, with smart
+ * matching of product / customer abbreviations against the cached Smaregi DB.
  *
  * Idempotent via the unique partial index on Schedule.googleEventId.
  */
@@ -14,9 +14,29 @@ import { query, queryOne } from './db';
 import { createSchedule } from './schedules';
 import type { calendar_v3 } from 'googleapis';
 
-const DEFAULT_PREFIX = '見積:';
+const DEFAULT_PREFIXES = ['商', 'サ', '新', '見'];
 /** Look back further than the poll interval so a slow Google update isn't missed. */
 const LOOKBACK_MS = 30 * 60 * 1000;
+
+/** Parse GOOGLE_CALENDAR_TITLE_PREFIX (comma-separated) into a list. */
+function loadPrefixes(): string[] {
+  const raw = process.env.GOOGLE_CALENDAR_TITLE_PREFIX;
+  if (!raw) return DEFAULT_PREFIXES;
+  const items = raw
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  return items.length > 0 ? items : DEFAULT_PREFIXES;
+}
+
+/** Return the matching prefix if the title starts with any of them, else null. */
+function matchPrefix(title: string, prefixes: string[]): string | null {
+  const t = title.trim();
+  for (const p of prefixes) {
+    if (t.startsWith(p)) return p;
+  }
+  return null;
+}
 
 export interface ImportResult {
   scanned: number;
@@ -37,10 +57,12 @@ interface ParsedLocation {
   amount: number;
 }
 
-export function parseEventTitle(rawTitle: string, prefix: string): ParsedTitle {
+export function parseEventTitle(rawTitle: string, prefixes: string[] | string): ParsedTitle {
+  const list = Array.isArray(prefixes) ? prefixes : [prefixes];
   let t = rawTitle.trim();
-  if (prefix && t.startsWith(prefix)) t = t.slice(prefix.length).trim();
-  // Some users add a space after the marker (e.g. `見積: ABC123`).
+  const matched = matchPrefix(t, list);
+  if (matched) t = t.slice(matched.length).trim();
+  // Some users add a space after the marker (e.g. `見 ABC123`).
   const tokens = t.split(/[\s/、]+/).filter(Boolean);
   if (tokens.length === 0) return { carType: '', productCodes: [] };
   return { carType: tokens[0], productCodes: tokens.slice(1) };
@@ -116,7 +138,7 @@ async function alreadyImported(eventId: string): Promise<boolean> {
 }
 
 interface ImportContext {
-  prefix: string;
+  prefixes: string[];
   calendarSummary: string;
   calendarId: string;
 }
@@ -127,10 +149,10 @@ async function importEvent(
 ): Promise<'imported' | 'skipped'> {
   if (!event.id) return 'skipped';
   const title = event.summary ?? '';
-  if (!title.trim().startsWith(ctx.prefix)) return 'skipped';
+  if (!matchPrefix(title, ctx.prefixes)) return 'skipped';
   if (await alreadyImported(event.id)) return 'skipped';
 
-  const titleP = parseEventTitle(title, ctx.prefix);
+  const titleP = parseEventTitle(title, ctx.prefixes);
   const locP = parseEventLocation(event.location ?? '');
 
   // Resolve customer (1 hit only — otherwise leave for manual selection).
@@ -187,7 +209,7 @@ export async function pollGoogleCalendars(): Promise<ImportResult> {
   const result: ImportResult = { scanned: 0, imported: 0, skipped: 0, errors: 0, calendars: 0 };
   if (!googleConfigured()) return result;
 
-  const prefix = (process.env.GOOGLE_CALENDAR_TITLE_PREFIX ?? DEFAULT_PREFIX).trim() || DEFAULT_PREFIX;
+  const prefixes = loadPrefixes();
   const calendar = getCalendarClient();
   const updatedMin = new Date(Date.now() - LOOKBACK_MS).toISOString();
 
@@ -222,7 +244,7 @@ export async function pollGoogleCalendars(): Promise<ImportResult> {
           result.scanned++;
           try {
             const outcome = await importEvent(ev, {
-              prefix,
+              prefixes,
               calendarSummary: cal.summary,
               calendarId: cal.id,
             });
