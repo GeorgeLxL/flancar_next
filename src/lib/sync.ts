@@ -51,15 +51,12 @@ function nowInJst(): JstParts {
   };
 }
 
-// "A month ago today, same JST current time" — month-1 with year rollover,
+// "N months ago today, same JST current time" — month - n with year rollover,
 // day clamped to the target month's last day so 3/31 -> 2/28 etc.
-function oneMonthAgoJst(p: JstParts): JstParts {
-  let year = p.year;
-  let month = p.month - 1;
-  if (month < 1) {
-    month = 12;
-    year -= 1;
-  }
+function monthsAgoJst(p: JstParts, n: number): JstParts {
+  const total = p.month - 1 - n; // 0-indexed months since year 0
+  const year = p.year + Math.floor(total / 12);
+  const month = ((total % 12) + 12) % 12 + 1;
   const lastDayOfMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
   return { ...p, year, month, day: Math.min(p.day, lastDayOfMonth) };
 }
@@ -71,9 +68,13 @@ function formatJst(p: JstParts): string {
   );
 }
 
+// Sync window — widened from 1 month to 12 months so older Smaregi entries
+// (e.g. products registered before the previous sync window) still get pulled in.
+const LOOKBACK_MONTHS = 12;
+
 function lastMonthRange() {
   const now = nowInJst();
-  const from = oneMonthAgoJst(now);
+  const from = monthsAgoJst(now, LOOKBACK_MONTHS);
   return {
     'upd_date_time-from': formatJst(from),
     'upd_date_time-to': formatJst(now),
