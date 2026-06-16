@@ -23,11 +23,10 @@ async function fetchAllPages<T>(
   return all;
 }
 
-// Smaregi expects timestamps in JST (`+09:00`). Pulling only the last month's
-// updates keeps the sync within the platform's response-time budget (raw
-// full pulls were timing out at 504). All time math is done on the JST
-// wall-clock, server-timezone-independent.
+// Smaregi expects timestamps in JST (`+09:00`). All time math is done on the
+// JST wall-clock, server-timezone-independent.
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const pad = (n: number) => String(n).padStart(2, '0');
 
 interface JstParts {
@@ -39,8 +38,8 @@ interface JstParts {
   second: number;
 }
 
-function nowInJst(): JstParts {
-  const j = new Date(Date.now() + JST_OFFSET_MS);
+function toJstParts(epochMs: number): JstParts {
+  const j = new Date(epochMs + JST_OFFSET_MS);
   return {
     year: j.getUTCFullYear(),
     month: j.getUTCMonth() + 1,
@@ -51,16 +50,6 @@ function nowInJst(): JstParts {
   };
 }
 
-// "N months ago today, same JST current time" — month - n with year rollover,
-// day clamped to the target month's last day so 3/31 -> 2/28 etc.
-function monthsAgoJst(p: JstParts, n: number): JstParts {
-  const total = p.month - 1 - n; // 0-indexed months since year 0
-  const year = p.year + Math.floor(total / 12);
-  const month = ((total % 12) + 12) % 12 + 1;
-  const lastDayOfMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  return { ...p, year, month, day: Math.min(p.day, lastDayOfMonth) };
-}
-
 function formatJst(p: JstParts): string {
   return (
     `${p.year}-${pad(p.month)}-${pad(p.day)}` +
@@ -68,16 +57,17 @@ function formatJst(p: JstParts): string {
   );
 }
 
-// Sync window — last 1 month of updates, keeping the pull within Smaregi's
-// response-time budget (full pulls were timing out at 504).
-const LOOKBACK_MONTHS = 1;
+// Sync window — the most recent 30 days of updates. Smaregi's getProducts caps
+// the `upd_date_time` range at 31 days, so a wider window (the previous 12-month
+// setting) is rejected outright and the product sync silently fetches nothing.
+// 30 days keeps us safely under that limit while still bounding response time.
+const LOOKBACK_DAYS = 30;
 
 function lastMonthRange() {
-  const now = nowInJst();
-  const from = monthsAgoJst(now, LOOKBACK_MONTHS);
+  const nowMs = Date.now();
   return {
-    'upd_date_time-from': formatJst(from),
-    'upd_date_time-to': formatJst(now),
+    'upd_date_time-from': formatJst(toJstParts(nowMs - LOOKBACK_DAYS * DAY_MS)),
+    'upd_date_time-to': formatJst(toJstParts(nowMs)),
   };
 }
 
