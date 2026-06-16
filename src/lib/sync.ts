@@ -68,9 +68,9 @@ function formatJst(p: JstParts): string {
   );
 }
 
-// Sync window — widened from 1 month to 12 months so older Smaregi entries
-// (e.g. products registered before the previous sync window) still get pulled in.
-const LOOKBACK_MONTHS = 12;
+// Sync window — last 1 month of updates, keeping the pull within Smaregi's
+// response-time budget (full pulls were timing out at 504).
+const LOOKBACK_MONTHS = 1;
 
 function lastMonthRange() {
   const now = nowInJst();
