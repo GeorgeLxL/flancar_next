@@ -44,6 +44,10 @@ export interface ImportResult {
   skipped: number;
   errors: number;
   calendars: number;
+  /** false when the Google integration (service account) is not configured. */
+  configured: boolean;
+  /** Set when the calendar listing itself failed (e.g. auth / permission). */
+  error?: string;
 }
 
 interface ParsedTitle {
@@ -206,8 +210,20 @@ async function importEvent(
  * googleEventId index.
  */
 export async function pollGoogleCalendars(): Promise<ImportResult> {
-  const result: ImportResult = { scanned: 0, imported: 0, skipped: 0, errors: 0, calendars: 0 };
-  if (!googleConfigured()) return result;
+  const result: ImportResult = {
+    scanned: 0,
+    imported: 0,
+    skipped: 0,
+    errors: 0,
+    calendars: 0,
+    configured: true,
+  };
+  if (!googleConfigured()) {
+    // Distinguish "integration not set up" from "set up but no calendars shared"
+    // — both otherwise look identical (calendars: 0) and waste debugging time.
+    result.configured = false;
+    return result;
+  }
 
   const prefixes = loadPrefixes();
   const calendar = getCalendarClient();
@@ -215,14 +231,23 @@ export async function pollGoogleCalendars(): Promise<ImportResult> {
 
   // List all calendars accessible to the service account.
   const calendarList: Array<{ id: string; summary: string }> = [];
-  let pageToken: string | undefined;
-  do {
-    const res = await calendar.calendarList.list({ pageToken, maxResults: 250 });
-    for (const item of res.data.items ?? []) {
-      if (item.id && item.summary) calendarList.push({ id: item.id, summary: item.summary });
-    }
-    pageToken = res.data.nextPageToken ?? undefined;
-  } while (pageToken);
+  try {
+    let pageToken: string | undefined;
+    do {
+      const res = await calendar.calendarList.list({ pageToken, maxResults: 250 });
+      for (const item of res.data.items ?? []) {
+        if (item.id && item.summary) calendarList.push({ id: item.id, summary: item.summary });
+      }
+      pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+  } catch (err) {
+    // An auth/permission failure here means we can't see any calendar at all —
+    // surface it instead of silently reporting "0 calendars".
+    result.errors++;
+    result.error = err instanceof Error ? err.message : String(err);
+    console.error('Google calendarList.list failed:', result.error);
+    return result;
+  }
 
   result.calendars = calendarList.length;
 
