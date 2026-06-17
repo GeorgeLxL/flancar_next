@@ -30,8 +30,29 @@ declare global {
     | undefined;
 }
 
+/**
+ * Resolve the raw service-account JSON string from env.
+ *
+ * Prefers GOOGLE_SERVICE_ACCOUNT_BASE64 (the whole JSON, base64-encoded) because
+ * pasting raw JSON into a host's env UI frequently corrupts the multi-line
+ * private_key (stripped/altered newlines → "DECODER routines::unsupported").
+ * base64 has no special characters, so it survives copy-paste intact. Falls back
+ * to the plain GOOGLE_SERVICE_ACCOUNT_JSON for local/dev use.
+ */
+function loadRawJson(): string | null {
+  const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_BASE64;
+  if (b64) {
+    try {
+      return Buffer.from(b64, 'base64').toString('utf8');
+    } catch {
+      return null;
+    }
+  }
+  return process.env.GOOGLE_SERVICE_ACCOUNT_JSON ?? null;
+}
+
 function loadKey(): ServiceAccountKey | null {
-  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  const raw = loadRawJson();
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as ServiceAccountKey;
