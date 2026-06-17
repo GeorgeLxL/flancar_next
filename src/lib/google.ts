@@ -36,6 +36,11 @@ function loadKey(): ServiceAccountKey | null {
   try {
     const parsed = JSON.parse(raw) as ServiceAccountKey;
     if (!parsed.client_email || !parsed.private_key) return null;
+    // Env-stored keys often arrive with escaped "\n" instead of real newlines,
+    // which makes OpenSSL reject the PEM ("error:1E08010C:DECODER
+    // routines::unsupported"). Normalize so both forms work. No-op when the key
+    // already contains real newlines.
+    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
     return parsed;
   } catch {
     return null;
