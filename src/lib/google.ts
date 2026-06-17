@@ -39,16 +39,51 @@ declare global {
  * base64 has no special characters, so it survives copy-paste intact. Falls back
  * to the plain GOOGLE_SERVICE_ACCOUNT_JSON for local/dev use.
  */
+/** Which env var the key was last loaded from — for non-secret diagnostics. */
+let lastKeySource: 'base64' | 'json' | 'none' = 'none';
+
 function loadRawJson(): string | null {
   const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_BASE64;
   if (b64) {
+    lastKeySource = 'base64';
     try {
       return Buffer.from(b64, 'base64').toString('utf8');
     } catch {
       return null;
     }
   }
-  return process.env.GOOGLE_SERVICE_ACCOUNT_JSON ?? null;
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    lastKeySource = 'json';
+    return process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  }
+  lastKeySource = 'none';
+  return null;
+}
+
+/**
+ * Non-secret diagnostics about the configured key — which env source was used
+ * and whether the decoded private_key looks like a valid PEM. Never returns key
+ * material. Used to surface *why* auth fails (e.g. DECODER errors) without
+ * having to read the server's env directly.
+ */
+export function googleKeyDiagnostics(): Record<string, unknown> {
+  const raw = loadRawJson();
+  if (!raw) return { source: lastKeySource, present: false };
+  try {
+    const parsed = JSON.parse(raw) as ServiceAccountKey;
+    const pk = (parsed.private_key ?? '').replace(/\\n/g, '\n');
+    return {
+      source: lastKeySource,
+      present: true,
+      clientEmailSet: Boolean(parsed.client_email),
+      pemHasBegin: pk.includes('-----BEGIN'),
+      pemHasEnd: pk.includes('-----END'),
+      pemHasNewline: pk.includes('\n'),
+      pemLength: pk.length,
+    };
+  } catch {
+    return { source: lastKeySource, present: true, jsonParse: 'failed' };
+  }
 }
 
 function loadKey(): ServiceAccountKey | null {

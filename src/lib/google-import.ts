@@ -9,7 +9,7 @@
  * Idempotent via the unique partial index on Schedule.googleEventId.
  */
 
-import { getCalendarClient, googleConfigured } from './google';
+import { getCalendarClient, googleConfigured, googleKeyDiagnostics } from './google';
 import { query, queryOne } from './db';
 import { createSchedule } from './schedules';
 import type { calendar_v3 } from 'googleapis';
@@ -242,9 +242,12 @@ export async function pollGoogleCalendars(): Promise<ImportResult> {
     } while (pageToken);
   } catch (err) {
     // An auth/permission failure here means we can't see any calendar at all —
-    // surface it instead of silently reporting "0 calendars".
+    // surface it instead of silently reporting "0 calendars". Append non-secret
+    // key diagnostics so DECODER/auth errors point at the actual cause (which
+    // env source was used, whether the PEM looks valid).
     result.errors++;
-    result.error = err instanceof Error ? err.message : String(err);
+    const message = err instanceof Error ? err.message : String(err);
+    result.error = `${message} | key=${JSON.stringify(googleKeyDiagnostics())}`;
     console.error('Google calendarList.list failed:', result.error);
     return result;
   }
