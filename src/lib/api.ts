@@ -29,6 +29,11 @@ export const updateScheduleStatus = (id: number, status: string) =>
   api.patch(`/schedules/${id}/status`, { status }).then(r => r.data);
 export const deleteSchedule = (id: number) => api.delete(`/schedules/${id}`);
 
+export const getCalendarSources = () => api.get('/google/calendars').then(r => r.data);
+export const addCalendarSource = (calendarId: string, label: string) =>
+  api.post('/google/calendars', { calendarId, label }).then(r => r.data);
+export const deleteCalendarSource = (id: number) => api.delete(`/google/calendars/${id}`);
+
 export const getProducts = () => api.get('/smaregi/products').then(r => r.data);
 export const searchProducts = (q: string) =>
   api.get('/smaregi/products/search', { params: { q } }).then(r => r.data);
