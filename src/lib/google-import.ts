@@ -10,7 +10,7 @@
  */
 
 import { getCalendarClient, googleConfigured, googleKeyDiagnostics } from './google';
-import { listCalendarSources } from './calendar-sources';
+import { addCalendarSource, listCalendarSources } from './calendar-sources';
 import { query, queryOne } from './db';
 import { createSchedule } from './schedules';
 import type { calendar_v3 } from 'googleapis';
@@ -203,6 +203,57 @@ async function importEvent(
   );
 
   return 'imported';
+}
+
+export interface DiscoverResult {
+  configured: boolean;
+  /** How many calendars the service account can currently see. */
+  found: number;
+  /** Calendars registered into the DB (id + label). */
+  registered: Array<{ calendarId: string; label: string }>;
+  error?: string;
+}
+
+/**
+ * List every calendar the service account can currently see
+ * (`calendarList.list()`) and register each one into the CalendarSource DB in
+ * a single call. Idempotent — re-running just refreshes the same rows.
+ *
+ * Note: a service account only sees calendars that are in its own list, so this
+ * finds nothing for calendars that are shared-but-not-listed. In that case the
+ * admin must register the calendar ID manually.
+ */
+export async function discoverAndRegisterCalendars(): Promise<DiscoverResult> {
+  const result: DiscoverResult = { configured: true, found: 0, registered: [] };
+  if (!googleConfigured()) {
+    result.configured = false;
+    return result;
+  }
+
+  const calendar = getCalendarClient();
+  const found: Array<{ id: string; summary: string }> = [];
+  try {
+    let pageToken: string | undefined;
+    do {
+      const res = await calendar.calendarList.list({ pageToken, maxResults: 250 });
+      for (const item of res.data.items ?? []) {
+        if (item.id) found.push({ id: item.id, summary: item.summaryOverride || item.summary || item.id });
+      }
+      pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    result.error = `${message} | key=${JSON.stringify(googleKeyDiagnostics())}`;
+    console.error('Google calendar discovery failed:', result.error);
+    return result;
+  }
+
+  result.found = found.length;
+  for (const c of found) {
+    const saved = await addCalendarSource(c.id, c.summary);
+    result.registered.push({ calendarId: saved.calendarId, label: saved.label });
+  }
+  return result;
 }
 
 /**
