@@ -20,8 +20,8 @@ const DEFAULT_PREFIXES = ['商', 'サ', '新', '見'];
 const LOOKBACK_MS = 30 * 60 * 1000;
 /** Login window: the poll fired once on page load looks back 1 day. */
 const LOGIN_LOOKBACK_MS = 24 * 60 * 60 * 1000;
-/** Manual "Google取込" button window — wide enough to catch events from months ago. */
-const FULL_LOOKBACK_MS = 90 * 24 * 60 * 60 * 1000;
+/** Manual "Google取込" button window — 1 week, to catch recently-created events. */
+const FULL_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Parse GOOGLE_CALENDAR_TITLE_PREFIX (comma-separated) into a list. */
 function loadPrefixes(): string[] {
