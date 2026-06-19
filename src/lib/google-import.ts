@@ -129,17 +129,73 @@ interface CustomerMatch {
   customerId: string;
 }
 
-async function matchCustomerByAbbrev(abbrev: string): Promise<CustomerMatch | null> {
-  if (!abbrev) return null;
-  const like = `%${abbrev}%`;
-  const rows = await query<CustomerMatch>(
-    `SELECT "customerId"
-       FROM "Customer"
-      WHERE "customerName" ILIKE $1
-      LIMIT 2`,
-    [like],
+/** All customers, cached so fuzzy matching doesn't re-query the table per event. */
+let customerCache: Array<{ customerId: string; customerName: string }> | null = null;
+let customerCacheAt = 0;
+const CUSTOMER_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function loadCustomers(): Promise<Array<{ customerId: string; customerName: string }>> {
+  if (customerCache && Date.now() - customerCacheAt < CUSTOMER_CACHE_TTL_MS) return customerCache;
+  customerCache = await query<{ customerId: string; customerName: string }>(
+    `SELECT "customerId", "customerName" FROM "Customer"`,
   );
-  return rows.length === 1 ? rows[0] : null;
+  customerCacheAt = Date.now();
+  return customerCache;
+}
+
+/** True if every char of `needle` appears in `hay` in order (subsequence). */
+function isSubsequence(needle: string, hay: string): boolean {
+  let i = 0;
+  for (const ch of hay) {
+    if (i < needle.length && ch === needle[i]) i++;
+    if (i === needle.length) return true;
+  }
+  return i === needle.length;
+}
+
+/**
+ * Score how well a calendar alias (e.g. "PT駒沢") matches a customer name. The
+ * alias is a loose handle — the real name may contain only some of its chars,
+ * in any arrangement — so we rank by how much of the alias the name covers,
+ * with a bonus when the chars appear in order. 0 = no overlap at all.
+ */
+function customerRelevance(alias: string, name: string): number {
+  const a = alias.toLowerCase().replace(/[\s　]/g, '');
+  const n = name.toLowerCase().replace(/[\s　]/g, '');
+  if (!a || !n) return 0;
+  const distinct = [...new Set(a)];
+  const present = distinct.filter(ch => n.includes(ch)).length;
+  if (present === 0) return 0;
+  const coverage = present / distinct.length; // how much of the alias the name covers (0..1)
+  const ordered = isSubsequence(a, n) ? 1 : 0; // bonus when alias chars appear in order
+  return coverage * 2 + ordered;
+}
+
+/**
+ * Pick a customer for an alias — always a valid, existing customer so the
+ * Schedule.customerId foreign key is satisfied (the column is never left blank).
+ * Returns the single most relevant fuzzy match; if nothing overlaps the alias,
+ * falls back to the first customer in the table. Null only when there are no
+ * customers at all.
+ */
+async function matchCustomerByAbbrev(alias: string): Promise<CustomerMatch | null> {
+  const customers = await loadCustomers();
+  if (customers.length === 0) return null;
+
+  let best: { customerId: string; customerName: string } | null = null;
+  let bestScore = 0;
+  if (alias) {
+    for (const c of customers) {
+      const score = customerRelevance(alias, c.customerName);
+      if (score <= 0) continue;
+      if (score > bestScore || (score === bestScore && best !== null && c.customerName.length < best.customerName.length)) {
+        best = c;
+        bestScore = score;
+      }
+    }
+  }
+  // No relevant match → fall back to the first customer so the FK still resolves.
+  return { customerId: (best ?? customers[0]).customerId };
 }
 
 async function alreadyImported(eventId: string): Promise<boolean> {
