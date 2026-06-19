@@ -25,11 +25,13 @@ export default function GoogleAutoPoll() {
     // Only admins should be hitting the import endpoint.
     if (user.roleId !== '1') return;
 
-    const fire = () => {
+    const fire = (mode: 'login' | 'heartbeat') => {
       const now = Date.now();
       if (now - lastFiredAt.current < MIN_INTERVAL_MS) return;
       lastFiredAt.current = now;
-      fetch('/google/poll', {
+      // login → 1-day window; heartbeat → 30-min window (server default).
+      const url = mode === 'login' ? '/google/poll?mode=login' : '/google/poll';
+      fetch(url, {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
@@ -38,11 +40,11 @@ export default function GoogleAutoPoll() {
       });
     };
 
-    fire(); // immediate poll on mount
-    const interval = window.setInterval(fire, POLL_INTERVAL_MS);
-    const onFocus = () => fire();
+    fire('login'); // wider one-day scan on page load
+    const interval = window.setInterval(() => fire('heartbeat'), POLL_INTERVAL_MS);
+    const onFocus = () => fire('heartbeat');
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') fire();
+      if (document.visibilityState === 'visible') fire('heartbeat');
     };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisibility);
