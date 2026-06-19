@@ -64,23 +64,23 @@ export default function Navbar() {
     setSyncing(true);
     try {
       const res = await axios.post(
-        '/google/poll',
+        '/google/poll?mode=full',
         {},
         { withCredentials: true },
       );
-      const { imported, skipped, calendars, configured, error } = res.data ?? {};
+      const { scanned, imported, skipped, calendars, configured, error } = res.data ?? {};
       if (configured === false) {
         toast.error('Googleカレンダー連携が未設定です（サービスアカウント未設定）。');
       } else if (error) {
         toast.error(`Googleカレンダー取込エラー: ${error}`);
       } else if ((calendars ?? 0) === 0) {
         toast(
-          'カレンダーが0件です。サービスアカウントに担当者カレンダーが共有されているかご確認ください。',
+          'カレンダーが0件です。「カレンダー設定」でカレンダーIDを登録してください。',
           { icon: '⚠️' },
         );
       } else {
         toast.success(
-          `Googleカレンダー取込: 新規 ${imported ?? 0} 件 / スキップ ${skipped ?? 0} 件 (${calendars ?? 0} カレンダー)`,
+          `Googleカレンダー取込: 新規 ${imported ?? 0} 件 / スキップ ${skipped ?? 0} 件 / 走査 ${scanned ?? 0} 件 (${calendars ?? 0} カレンダー)`,
         );
       }
     } catch {

@@ -16,8 +16,12 @@ import { createSchedule } from './schedules';
 import type { calendar_v3 } from 'googleapis';
 
 const DEFAULT_PREFIXES = ['商', 'サ', '新', '見'];
-/** Look back further than the poll interval so a slow Google update isn't missed. */
+/** Heartbeat window: each periodic auto-poll (every ~1 min) looks back 30 min. */
 const LOOKBACK_MS = 30 * 60 * 1000;
+/** Login window: the poll fired once on page load looks back 1 day. */
+const LOGIN_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+/** Manual "Google取込" button window — wide enough to catch events from months ago. */
+const FULL_LOOKBACK_MS = 90 * 24 * 60 * 60 * 1000;
 
 /** Parse GOOGLE_CALENDAR_TITLE_PREFIX (comma-separated) into a list. */
 function loadPrefixes(): string[] {
@@ -261,7 +265,9 @@ export async function discoverAndRegisterCalendars(): Promise<DiscoverResult> {
  * matching events. Safe to run repeatedly — dupes are blocked by the unique
  * googleEventId index.
  */
-export async function pollGoogleCalendars(): Promise<ImportResult> {
+export async function pollGoogleCalendars(
+  options: { mode?: 'full' | 'login' | 'heartbeat' } = {},
+): Promise<ImportResult> {
   const result: ImportResult = {
     scanned: 0,
     imported: 0,
@@ -279,7 +285,11 @@ export async function pollGoogleCalendars(): Promise<ImportResult> {
 
   const prefixes = loadPrefixes();
   const calendar = getCalendarClient();
-  const updatedMin = new Date(Date.now() - LOOKBACK_MS).toISOString();
+  // Window depends on the trigger: a manual press scans wide (catch old events),
+  // the login poll a day, and the frequent heartbeat just the last 30 min.
+  const lookbackMs =
+    options.mode === 'full' ? FULL_LOOKBACK_MS : options.mode === 'login' ? LOGIN_LOOKBACK_MS : LOOKBACK_MS;
+  const updatedMin = new Date(Date.now() - lookbackMs).toISOString();
 
   // Build the set of calendars to scan, keyed by id so the two sources dedupe.
   const calMap = new Map<string, { id: string; summary: string }>();
