@@ -53,6 +53,8 @@ export interface ImportResult {
   configured: boolean;
   /** Set when the calendar listing itself failed (e.g. auth / permission). */
   error?: string;
+  /** Why scanned events were skipped — to diagnose "scanned N, imported 0". */
+  breakdown: { noPrefix: number; duplicate: number; noTime: number };
 }
 
 interface ParsedTitle {
@@ -152,14 +154,16 @@ interface ImportContext {
   calendarId: string;
 }
 
+type ImportOutcome = 'imported' | 'no-id' | 'no-prefix' | 'duplicate' | 'no-time';
+
 async function importEvent(
   event: calendar_v3.Schema$Event,
   ctx: ImportContext,
-): Promise<'imported' | 'skipped'> {
-  if (!event.id) return 'skipped';
+): Promise<ImportOutcome> {
+  if (!event.id) return 'no-id';
   const title = event.summary ?? '';
-  if (!matchPrefix(title, ctx.prefixes)) return 'skipped';
-  if (await alreadyImported(event.id)) return 'skipped';
+  if (!matchPrefix(title, ctx.prefixes)) return 'no-prefix';
+  if (await alreadyImported(event.id)) return 'duplicate';
 
   const titleP = parseEventTitle(title, ctx.prefixes);
   const locP = parseEventLocation(event.location ?? '');
@@ -183,7 +187,7 @@ async function importEvent(
 
   const start = event.start?.dateTime ?? event.start?.date;
   const end = event.end?.dateTime ?? event.end?.date;
-  if (!start || !end) return 'skipped';
+  if (!start || !end) return 'no-time';
 
   await createSchedule(
     {
@@ -275,6 +279,7 @@ export async function pollGoogleCalendars(
     errors: 0,
     calendars: 0,
     configured: true,
+    breakdown: { noPrefix: 0, duplicate: 0, noTime: 0 },
   };
   if (!googleConfigured()) {
     // Distinguish "integration not set up" from "set up but no calendars shared"
@@ -360,8 +365,14 @@ export async function pollGoogleCalendars(
               calendarSummary: cal.summary,
               calendarId: cal.id,
             });
-            if (outcome === 'imported') result.imported++;
-            else result.skipped++;
+            if (outcome === 'imported') {
+              result.imported++;
+            } else {
+              result.skipped++;
+              if (outcome === 'no-prefix') result.breakdown.noPrefix++;
+              else if (outcome === 'duplicate') result.breakdown.duplicate++;
+              else if (outcome === 'no-time') result.breakdown.noTime++;
+            }
           } catch (err) {
             result.errors++;
             console.error('Google import event failed:', err);

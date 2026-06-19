@@ -68,7 +68,7 @@ export default function Navbar() {
         {},
         { withCredentials: true },
       );
-      const { scanned, imported, skipped, calendars, configured, error } = res.data ?? {};
+      const { scanned, imported, skipped, calendars, configured, error, breakdown } = res.data ?? {};
       if (configured === false) {
         toast.error('Googleカレンダー連携が未設定です（サービスアカウント未設定）。');
       } else if (error) {
@@ -79,8 +79,13 @@ export default function Navbar() {
           { icon: '⚠️' },
         );
       } else {
+        const b = breakdown ?? { noPrefix: 0, duplicate: 0, noTime: 0 };
+        const detail =
+          (imported ?? 0) === 0
+            ? `（内訳: 記号不一致 ${b.noPrefix} / 既取込 ${b.duplicate} / 日時なし ${b.noTime}）`
+            : '';
         toast.success(
-          `Googleカレンダー取込: 新規 ${imported ?? 0} 件 / スキップ ${skipped ?? 0} 件 / 走査 ${scanned ?? 0} 件 (${calendars ?? 0} カレンダー)`,
+          `Googleカレンダー取込: 新規 ${imported ?? 0} 件 / スキップ ${skipped ?? 0} 件 / 走査 ${scanned ?? 0} 件 (${calendars ?? 0} カレンダー)${detail}`,
         );
       }
     } catch {
