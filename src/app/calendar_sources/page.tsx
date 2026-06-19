@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { addCalendarSource, deleteCalendarSource, getCalendarSources } from '@/lib/api';
+import {
+  addCalendarSource,
+  deleteCalendarSource,
+  discoverCalendarSources,
+  getCalendarSources,
+} from '@/lib/api';
 import RequireRole from '@/components/RequireRole';
 
 type CalendarSource = {
@@ -25,6 +30,7 @@ function CalendarSources() {
   const [calendarId, setCalendarId] = useState('');
   const [label, setLabel] = useState('');
   const [saving, setSaving] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
   const load = () => {
@@ -54,6 +60,35 @@ function CalendarSources() {
     }
   };
 
+  const handleDiscover = async () => {
+    setDiscovering(true);
+    try {
+      const res = await discoverCalendarSources();
+      if (res?.configured === false) {
+        toast.error('Google連携が未設定です（サービスアカウント未設定）。');
+        return;
+      }
+      if (res?.error) {
+        toast.error(`取得エラー: ${res.error}`);
+        return;
+      }
+      const count = res?.registered?.length ?? 0;
+      if (count === 0) {
+        toast(
+          'サービスアカウントから見えるカレンダーが0件でした。手動でカレンダーIDを追加してください。',
+          { icon: '⚠️' },
+        );
+      } else {
+        toast.success(`${count}件のカレンダーを取得・登録しました。`);
+      }
+      load();
+    } catch {
+      toast.error('カレンダーの自動取得に失敗しました。');
+    } finally {
+      setDiscovering(false);
+    }
+  };
+
   const handleDelete = async (id: number) => {
     setDeletingId(id);
     try {
@@ -71,9 +106,20 @@ function CalendarSources() {
     <div className="min-h-screen bg-white px-4 py-6 sm:px-8 sm:py-10">
       <div className="mx-auto max-w-4xl">
         <div className="mb-6">
-          <h1 className="text-xl font-semibold text-gray-900">Googleカレンダー連携設定</h1>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <h1 className="text-xl font-semibold text-gray-900">Googleカレンダー連携設定</h1>
+            <button
+              type="button"
+              onClick={handleDiscover}
+              disabled={discovering}
+              className="shrink-0 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {discovering ? '取得中...' : 'Googleから自動取得'}
+            </button>
+          </div>
           <p className="mt-1 text-sm text-gray-400">
-            取り込み対象のGoogleカレンダーを登録します。各カレンダーは
+            「Googleから自動取得」を押すと、サービスアカウントが見えるカレンダーを自動で登録します。
+            表示されない場合は、下のフォームから手動で追加してください。各カレンダーは
             <span className="font-medium text-gray-500"> flancar-neo@flancar-neo.iam.gserviceaccount.com </span>
             に「予定の変更」権限で共有してください。
           </p>

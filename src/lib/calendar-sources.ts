@@ -53,6 +53,22 @@ export async function addCalendarSource(calendarId: string, label: string): Prom
   return rows[0];
 }
 
+/**
+ * Register a calendar only if it isn't already in the table. Unlike
+ * addCalendarSource this never overwrites an existing label, so it's safe to
+ * call on every sync for auto-discovered calendars without clobbering names an
+ * admin set by hand.
+ */
+export async function addCalendarSourceIfNew(calendarId: string, label: string): Promise<void> {
+  await ensureTable();
+  await query(
+    `INSERT INTO "CalendarSource" ("calendarId", "label")
+     VALUES ($1, $2)
+     ON CONFLICT ("calendarId") DO NOTHING`,
+    [calendarId.trim(), label.trim()],
+  );
+}
+
 export async function deleteCalendarSource(id: number): Promise<void> {
   await ensureTable();
   await query(`DELETE FROM "CalendarSource" WHERE "id" = $1`, [id]);
