@@ -10,7 +10,7 @@
  */
 
 import { getCalendarClient, googleConfigured, googleKeyDiagnostics } from './google';
-import { addCalendarSource, listCalendarSources } from './calendar-sources';
+import { addCalendarSource, addCalendarSourceIfNew, listCalendarSources } from './calendar-sources';
 import { query, queryOne } from './db';
 import { createSchedule } from './schedules';
 import type { calendar_v3 } from 'googleapis';
@@ -284,15 +284,22 @@ export async function pollGoogleCalendars(): Promise<ImportResult> {
   // Build the set of calendars to scan, keyed by id so the two sources dedupe.
   const calMap = new Map<string, { id: string; summary: string }>();
 
-  // (1) Auto-discovery: calendars in the service account's own list. For a
-  // service account this is often empty even when calendars are shared with it,
-  // which is why (2) below exists.
+  // (1) Auto-discovery + register: list the calendars in the service account's
+  // own list, persist each to the DB (so they show in the admin UI and stick),
+  // then scan them. This folds the "discover" step into the sync — one press of
+  // 「Google取込」 finds the calendars and imports in a single action. For a
+  // service account this list is often empty even when calendars are shared with
+  // it, which is why the DB-registered set (2) below also exists.
   try {
     let pageToken: string | undefined;
     do {
       const res = await calendar.calendarList.list({ pageToken, maxResults: 250 });
       for (const item of res.data.items ?? []) {
-        if (item.id && item.summary) calMap.set(item.id, { id: item.id, summary: item.summary });
+        if (!item.id) continue;
+        const summary = item.summaryOverride || item.summary || item.id;
+        calMap.set(item.id, { id: item.id, summary });
+        // Persist without overwriting a label an admin may have set by hand.
+        await addCalendarSourceIfNew(item.id, summary);
       }
       pageToken = res.data.nextPageToken ?? undefined;
     } while (pageToken);
