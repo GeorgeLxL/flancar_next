@@ -131,6 +131,12 @@ export default function Navbar() {
               >
                 色選択
               </Link>
+              <Link
+                href="/calendar_sources"
+                className="shrink-0 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-indigo-700 transition-colors hover:bg-indigo-100"
+              >
+                カレンダー設定
+              </Link>
               <button
                 type="button"
                 onClick={handleSyncProducts}
@@ -207,6 +213,13 @@ export default function Navbar() {
                     className="border-b border-gray-100 px-4 py-3 text-sm text-emerald-700 transition-colors hover:bg-gray-50"
                   >
                     Staff Colors
+                  </Link>
+                  <Link
+                    href="/calendar_sources"
+                    onClick={() => setMenuOpen(false)}
+                    className="border-b border-gray-100 px-4 py-3 text-sm text-indigo-700 transition-colors hover:bg-gray-50"
+                  >
+                    カレンダー設定
                   </Link>
                   <button
                     type="button"

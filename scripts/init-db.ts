@@ -108,6 +108,15 @@ CREATE TABLE IF NOT EXISTS "StaffColor" (
   "color" TEXT NOT NULL DEFAULT '#6b7280',
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Google calendars to import from. A service account doesn't auto-list
+-- calendars shared with it, so admins register each calendar's ID here.
+CREATE TABLE IF NOT EXISTS "CalendarSource" (
+  "id" SERIAL PRIMARY KEY,
+  "calendarId" TEXT NOT NULL UNIQUE,
+  "label" TEXT NOT NULL DEFAULT '',
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 `;
 
 async function main() {

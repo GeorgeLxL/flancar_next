@@ -10,6 +10,7 @@
  */
 
 import { getCalendarClient, googleConfigured, googleKeyDiagnostics } from './google';
+import { listCalendarSources } from './calendar-sources';
 import { query, queryOne } from './db';
 import { createSchedule } from './schedules';
 import type { calendar_v3 } from 'googleapis';
@@ -229,29 +230,44 @@ export async function pollGoogleCalendars(): Promise<ImportResult> {
   const calendar = getCalendarClient();
   const updatedMin = new Date(Date.now() - LOOKBACK_MS).toISOString();
 
-  // List all calendars accessible to the service account.
-  const calendarList: Array<{ id: string; summary: string }> = [];
+  // Build the set of calendars to scan, keyed by id so the two sources dedupe.
+  const calMap = new Map<string, { id: string; summary: string }>();
+
+  // (1) Auto-discovery: calendars in the service account's own list. For a
+  // service account this is often empty even when calendars are shared with it,
+  // which is why (2) below exists.
   try {
     let pageToken: string | undefined;
     do {
       const res = await calendar.calendarList.list({ pageToken, maxResults: 250 });
       for (const item of res.data.items ?? []) {
-        if (item.id && item.summary) calendarList.push({ id: item.id, summary: item.summary });
+        if (item.id && item.summary) calMap.set(item.id, { id: item.id, summary: item.summary });
       }
       pageToken = res.data.nextPageToken ?? undefined;
     } while (pageToken);
   } catch (err) {
-    // An auth/permission failure here means we can't see any calendar at all —
-    // surface it instead of silently reporting "0 calendars". Append non-secret
-    // key diagnostics so DECODER/auth errors point at the actual cause (which
-    // env source was used, whether the PEM looks valid).
+    // Non-fatal: a service account that can't list calendars can still read
+    // the explicitly-configured ones below via events.list. Record the cause
+    // (with non-secret key diagnostics) for visibility.
     result.errors++;
     const message = err instanceof Error ? err.message : String(err);
     result.error = `${message} | key=${JSON.stringify(googleKeyDiagnostics())}`;
     console.error('Google calendarList.list failed:', result.error);
-    return result;
   }
 
+  // (2) Admin-registered calendars (DB). events.list works on any calendar the
+  // service account has access to, regardless of calendarList membership — so a
+  // shared-but-not-listed calendar still gets scanned. The label overrides the
+  // summary so the imported schedule's staffName matches the staff (e.g. "後川").
+  for (const source of await listCalendarSources()) {
+    const existing = calMap.get(source.calendarId);
+    calMap.set(source.calendarId, {
+      id: source.calendarId,
+      summary: source.label || existing?.summary || source.calendarId,
+    });
+  }
+
+  const calendarList = [...calMap.values()];
   result.calendars = calendarList.length;
 
   for (const cal of calendarList) {
