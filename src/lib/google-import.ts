@@ -55,6 +55,8 @@ export interface ImportResult {
   error?: string;
   /** Why scanned events were skipped — to diagnose "scanned N, imported 0". */
   breakdown: { noPrefix: number; duplicate: number; noTime: number };
+  /** First exception message thrown while importing an event (non-secret). */
+  sampleError?: string;
 }
 
 interface ParsedTitle {
@@ -375,6 +377,8 @@ export async function pollGoogleCalendars(
             }
           } catch (err) {
             result.errors++;
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!result.sampleError) result.sampleError = msg;
             console.error('Google import event failed:', err);
           }
         }
