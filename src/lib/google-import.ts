@@ -17,13 +17,14 @@ import type { calendar_v3 } from 'googleapis';
 
 const DEFAULT_PREFIXES = ['商', 'サ', '新', '見', '発送'];
 
-// Status markers staff add for their own tracking (✔️ ⬜️ △ □ ◇ ○ ● ★ … and
-// emoji). Stripped everywhere before parsing so they don't break prefix
-// detection or get mistaken for car types / product codes. Ranges cover arrows,
-// technical/geometric/dingbat/misc symbols, the emoji variation selector, and
-// astral-plane emoji — but NOT CJK punctuation or kana/kanji.
-const MARKER_SYMBOLS =
-  /[←-⇿⌀-➿⬀-⯿️\u{1F000}-\u{1FAFF}]/gu;
+// Strip ALL symbol characters staff add for their own tracking — ✓ ▲ ★ □ △ ○ ●
+// ☑ ⬜ ◇ ✔️ and emoji — wherever they appear, so they never break prefix
+// detection or get mistaken for a car type / product code. Uses the Unicode
+// "Other Symbol" + "Modifier Symbol" categories (which cover all of those),
+// plus the emoji variation selector / ZWJ / emoji block. Deliberately does NOT
+// touch math symbols (so `+` in codes like `TW73+` survives), CJK punctuation
+// (「」、), separators (/), or kana/kanji.
+const MARKER_SYMBOLS = /[\p{So}\p{Sk}‍️\u{1F000}-\u{1FAFF}]/gu;
 
 function stripMarkers(s: string): string {
   return s.replace(MARKER_SYMBOLS, '');
