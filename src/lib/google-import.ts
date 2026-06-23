@@ -15,7 +15,19 @@ import { query, queryOne } from './db';
 import { createSchedule } from './schedules';
 import type { calendar_v3 } from 'googleapis';
 
-const DEFAULT_PREFIXES = ['商', 'サ', '新', '見'];
+const DEFAULT_PREFIXES = ['商', 'サ', '新', '見', '発送'];
+
+// Status markers staff add for their own tracking (✔️ ⬜️ △ □ ◇ ○ ● ★ … and
+// emoji). Stripped everywhere before parsing so they don't break prefix
+// detection or get mistaken for car types / product codes. Ranges cover arrows,
+// technical/geometric/dingbat/misc symbols, the emoji variation selector, and
+// astral-plane emoji — but NOT CJK punctuation or kana/kanji.
+const MARKER_SYMBOLS =
+  /[←-⇿⌀-➿⬀-⯿️\u{1F000}-\u{1FAFF}]/gu;
+
+function stripMarkers(s: string): string {
+  return s.replace(MARKER_SYMBOLS, '');
+}
 /** Heartbeat window: each periodic auto-poll (every ~1 min) looks back 30 min. */
 const LOOKBACK_MS = 30 * 60 * 1000;
 /** Login window: the poll fired once on page load looks back 1 day. */
@@ -36,7 +48,7 @@ function loadPrefixes(): string[] {
 
 /** Return the matching prefix if the title starts with any of them, else null. */
 function matchPrefix(title: string, prefixes: string[]): string | null {
-  const t = title.trim();
+  const t = stripMarkers(title).trim();
   for (const p of prefixes) {
     if (t.startsWith(p)) return p;
   }
@@ -72,33 +84,31 @@ interface ParsedLocation {
 
 export function parseEventTitle(rawTitle: string, prefixes: string[] | string): ParsedTitle {
   const list = Array.isArray(prefixes) ? prefixes : [prefixes];
-  let t = rawTitle.trim();
+  // 1) Drop status symbols (✔️ ⬜️ △ …).
+  let t = stripMarkers(rawTitle);
+  // 2) Drop codes the staff bracket as "not for the estimate" — 「…」 / 【…】.
+  t = t.replace(/「[^」]*」/g, ' ').replace(/【[^】]*】/g, ' ').trim();
+  // 3) Strip the leading marker (新 / 商 / 発送 …).
   const matched = matchPrefix(t, list);
   if (matched) t = t.slice(matched.length).trim();
-  // Some users add a space after the marker (e.g. `見 ABC123`).
-  const tokens = t.split(/[\s/、]+/).filter(Boolean);
+  // First token = car type; the rest = product short-codes. Split on /, space,
+  // and Japanese/ASCII commas (e.g. `新/E26/RZ522/MOD/TW73+`).
+  const tokens = t.split(/[\s/、,，]+/).filter(Boolean);
   if (tokens.length === 0) return { carType: '', productCodes: [] };
   return { carType: tokens[0], productCodes: tokens.slice(1) };
 }
 
 export function parseEventLocation(rawLocation: string): ParsedLocation {
-  const trimmed = (rawLocation ?? '').trim();
+  const trimmed = stripMarkers(rawLocation ?? '').trim();
   if (!trimmed) return { customerAbbrev: '', requester: '', amount: 0 };
-  const tokens = trimmed.split(/\s+/).filter(Boolean);
-  // Find the last token containing digits; treat as the price.
-  let amount = 0;
-  for (let i = tokens.length - 1; i >= 0; i--) {
-    const m = tokens[i].match(/(\d[\d,]*)/);
-    if (m) {
-      amount = Number(m[1].replace(/,/g, ''));
-      tokens.splice(i, 1);
-      break;
-    }
-  }
+  // Location format: `取引先/ご依頼者/金額/受注者` e.g. `TN荒川/杉村/83000+15000/後川`.
+  // Only the first two matter: customer + requester. Amounts (set in-app) and
+  // the order-taker name are intentionally ignored.
+  const tokens = trimmed.split(/[\s/、,，]+/).filter(Boolean);
   return {
     customerAbbrev: tokens[0] ?? '',
-    requester: tokens.slice(1).join(' '),
-    amount,
+    requester: tokens[1] ?? '',
+    amount: 0,
   };
 }
 
@@ -182,11 +192,17 @@ async function matchCustomerByAbbrev(alias: string): Promise<CustomerMatch | nul
   const customers = await loadCustomers();
   if (customers.length === 0) return null;
 
+  // Aliases carry a latin prefix (e.g. "TN荒川") that doesn't appear in the real
+  // name and was causing wrong matches — match on the Japanese part ("荒川"). If
+  // the alias is all-latin, fall back to the original so we still try.
+  const stripped = alias.replace(/[a-zA-Z0-9]/g, '').trim();
+  const key = stripped || alias;
+
   let best: { customerId: string; customerName: string } | null = null;
   let bestScore = 0;
-  if (alias) {
+  if (key) {
     for (const c of customers) {
-      const score = customerRelevance(alias, c.customerName);
+      const score = customerRelevance(key, c.customerName);
       if (score <= 0) continue;
       if (score > bestScore || (score === bestScore && best !== null && c.customerName.length < best.customerName.length)) {
         best = c;
@@ -229,8 +245,11 @@ async function importEvent(
   // Resolve customer (1 hit only — otherwise leave for manual selection).
   const matchedCustomer = await matchCustomerByAbbrev(locP.customerAbbrev);
 
-  // Resolve each product code — keep matches, drop unmatched.
+  // Resolve each product code. A code with exactly one match is auto-filled; a
+  // code with multiple matches (or none) can't be safely auto-picked, so it's
+  // kept in `pendingCodes` for the worker to select in the editor.
   const items = [];
+  const pendingCodes: string[] = [];
   for (const code of titleP.productCodes) {
     const product = await matchProductByCode(code);
     if (product) {
@@ -240,6 +259,8 @@ async function importEvent(
         unitPrice: product.unitPrice,
         quantity: 1,
       });
+    } else {
+      pendingCodes.push(code);
     }
   }
 
@@ -247,11 +268,17 @@ async function importEvent(
   const end = event.end?.dateTime ?? event.end?.date;
   if (!start || !end) return 'no-time';
 
+  // Description: 1st line is the customer name (お客様名); later lines are memos /
+  // slip numbers, kept in the schedule description but not treated as the name.
+  const descLines = (event.description ?? '').split(/\r?\n/).map(l => l.trim());
+  const customerName = descLines[0] ?? '';
+  const memo = descLines.slice(1).filter(Boolean).join('\n');
+
   await createSchedule(
     {
-      title: title.trim(),
+      title: stripMarkers(title).trim(),
       carType: titleP.carType,
-      description: event.description ?? '',
+      description: memo,
       startAt: new Date(start).toISOString(),
       endAt: new Date(end).toISOString(),
       customerId: matchedCustomer?.customerId ?? '',
@@ -259,10 +286,11 @@ async function importEvent(
       // Calendar summary is the most reliable hint to populate staffName.
       staffId: '',
       staffName: ctx.calendarSummary,
-      customer: '',
+      customer: customerName,
       requester: locP.requester,
       showComiPack: true,
       status: 'draft',
+      pendingCodes: pendingCodes.join(','),
     },
     items,
     { google: { eventId: event.id, calendarId: ctx.calendarId } },

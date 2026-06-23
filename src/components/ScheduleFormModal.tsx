@@ -235,6 +235,15 @@ export default function ScheduleFormModal({
             setValue(key, schedule[key] as never);
           }
         }
+        // Imported codes that matched multiple products (or none) become empty
+        // rows pre-loaded with the code, for the worker to pick from the dropdown.
+        const pending = String(schedule.pendingCodes ?? '')
+          .split(',')
+          .map(s => s.trim())
+          .filter(Boolean);
+        for (const code of pending) {
+          append({ productId: '', productName: '', maker: '', categoryId: '', unitPrice: 0, quantity: 1, rawCode: code });
+        }
         setLoading(false);
       });
     }
@@ -266,14 +275,17 @@ export default function ScheduleFormModal({
       ...data,
       startAt: toISO(data.startAt),
       endAt: toISO(data.endAt),
-      items: data.items.map(item => ({
-        productId: item.productId,
-        productName: item.productName,
-        maker: item.maker ?? '',
-        categoryId: item.categoryId ?? '',
-        unitPrice: item.unitPrice,
-        quantity: item.quantity,
-      })),
+      // Drop rows the worker left unresolved (imported codes with no product picked).
+      items: data.items
+        .filter(item => item.productId)
+        .map(item => ({
+          productId: item.productId,
+          productName: item.productName,
+          maker: item.maker ?? '',
+          categoryId: item.categoryId ?? '',
+          unitPrice: item.unitPrice,
+          quantity: item.quantity,
+        })),
     };
     try {
       const saved =
@@ -449,12 +461,20 @@ export default function ScheduleFormModal({
                       ? currentItem.quantity
                       : 0;
 
+                  const pendingCode = currentItem?.rawCode && !currentItem?.productId ? currentItem.rawCode : '';
+
                   return (
                     <div key={fieldItem.id} className="rounded-xl bg-gray-50 p-3">
+                      {pendingCode && (
+                        <div className="mb-2 text-xs font-medium text-amber-600">
+                          未確定品番「{pendingCode}」— 候補から選択してください
+                        </div>
+                      )}
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                         <AsyncSelect
                           loadOptions={loadProductOptions}
                           defaultOptions
+                          defaultInputValue={pendingCode}
                           value={
                             currentItem?.productId
                               ? {
@@ -471,7 +491,7 @@ export default function ScheduleFormModal({
                             setValue(`items.${index}.categoryId`, opt?.categoryId || '');
                             setValue(`items.${index}.unitPrice`, opt?.unitPrice || 0);
                           }}
-                          placeholder="商品を検索"
+                          placeholder={pendingCode ? `「${pendingCode}」を検索` : '商品を検索'}
                           styles={selectStyles as never}
                           noOptionsMessage={() => '該当なし'}
                           loadingMessage={() => '検索中...'}
@@ -480,6 +500,7 @@ export default function ScheduleFormModal({
                           menuPosition="fixed"
                         />
                         <input type="hidden" {...register(`items.${index}.productName`)} />
+                        <input type="hidden" {...register(`items.${index}.rawCode`)} />
                         <input type="hidden" {...register(`items.${index}.maker`)} />
                         <input type="hidden" {...register(`items.${index}.categoryId`)} />
                         <div className="flex items-center gap-2 text-sm">
