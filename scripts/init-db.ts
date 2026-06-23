@@ -86,6 +86,8 @@ ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "googleEventId" TEXT;
 ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "googleCalendarId" TEXT;
 ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "googleSyncedAt" TIMESTAMPTZ;
 ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "googleSyncError" TEXT;
+-- Unresolved Google-import product short-codes awaiting manual selection.
+ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "pendingCodes" TEXT;
 
 -- Unique partial index so a given Google event can only ever map to one Schedule.
 -- Phase 2 (Google → App) relies on this for idempotent imports.

@@ -28,8 +28,18 @@ interface ScheduleRow {
   googleCalendarId: string | null;
   googleSyncedAt: Date | null;
   googleSyncError: string | null;
+  pendingCodes: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+// Adds the `pendingCodes` column to existing databases on first use, so no
+// manual migration is needed. Cached — runs at most once per process.
+let scheduleSchemaReady = false;
+async function ensureScheduleSchema(): Promise<void> {
+  if (scheduleSchemaReady) return;
+  await query(`ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "pendingCodes" TEXT`);
+  scheduleSchemaReady = true;
 }
 
 interface ItemRow {
@@ -56,6 +66,8 @@ export interface ScheduleInput {
   requester?: string;
   showComiPack?: boolean;
   status?: ScheduleStatus;
+  /** Comma-separated product short-codes still needing manual selection. */
+  pendingCodes?: string;
 }
 
 export interface ScheduleItemInput {
@@ -79,16 +91,21 @@ function sanitizeSchedule(data: ScheduleInput) {
     requester: data.requester ?? '',
     showComiPack: Boolean(data.showComiPack),
     status: (data.status ?? 'draft') as ScheduleStatus,
+    pendingCodes: data.pendingCodes ?? '',
   };
 }
 
 function sanitizeItems(items: ScheduleItemInput[]) {
-  return (items || []).map(item => ({
-    productId: String(item.productId ?? ''),
-    categoryId: String(item.categoryId ?? ''),
-    unitPrice: Number(item.unitPrice) || 0,
-    quantity: Number(item.quantity) || 1,
-  }));
+  return (items || [])
+    // Drop rows with no product selected (e.g. unresolved import codes the
+    // worker didn't pick). Keeps blank productIds out of ScheduleItem.
+    .filter(item => String(item.productId ?? '').trim() !== '')
+    .map(item => ({
+      productId: String(item.productId ?? ''),
+      categoryId: String(item.categoryId ?? ''),
+      unitPrice: Number(item.unitPrice) || 0,
+      quantity: Number(item.quantity) || 1,
+    }));
 }
 
 async function loadScheduleAggregate(id: number) {
@@ -301,6 +318,7 @@ export async function createSchedule(
   const data = sanitizeSchedule(input);
   const sItems = sanitizeItems(items);
   const dateStr = format(new Date(), 'MMdd');
+  await ensureScheduleSchema();
 
   return withTransaction(async client => {
     const latest = await client.query<{ pdfNumber: string | null }>(
@@ -316,9 +334,9 @@ export async function createSchedule(
       `INSERT INTO "Schedule"
          (title, "carType", description, "startAt", "endAt", "customerId", "staffId", "staffName",
           customer, requester, "showComiPack", "pdfNumber", status,
-          "googleEventId", "googleCalendarId", "googleSyncedAt", "updatedAt")
+          "googleEventId", "googleCalendarId", "googleSyncedAt", "pendingCodes", "updatedAt")
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-               CASE WHEN $14::text IS NOT NULL THEN NOW() ELSE NULL END, NOW())
+               CASE WHEN $14::text IS NOT NULL THEN NOW() ELSE NULL END, $16, NOW())
        RETURNING *`,
       [
         data.title,
@@ -336,6 +354,7 @@ export async function createSchedule(
         data.status,
         options.google?.eventId ?? null,
         options.google?.calendarId ?? null,
+        data.pendingCodes,
       ],
     );
     const id = inserted.rows[0].id;
@@ -361,13 +380,16 @@ export async function createSchedule(
 export async function updateSchedule(id: number, input: ScheduleInput, items: ScheduleItemInput[]) {
   const data = sanitizeSchedule(input);
   const sItems = sanitizeItems(items);
+  await ensureScheduleSchema();
 
   await withTransaction(async client => {
     const result = await client.query(
+      // A manual save means the worker has had the chance to resolve imported
+      // codes, so clear pendingCodes.
       `UPDATE "Schedule"
           SET title=$1, "carType"=$2, description=$3, "startAt"=$4, "endAt"=$5,
               "customerId"=$6, "staffId"=$7, "staffName"=$8, customer=$9, requester=$10,
-              "showComiPack"=$11, status=$12, "updatedAt"=NOW()
+              "showComiPack"=$11, status=$12, "pendingCodes"='', "updatedAt"=NOW()
         WHERE id=$13`,
       [
         data.title,

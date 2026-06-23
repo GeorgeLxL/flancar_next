@@ -7,6 +7,9 @@ export const scheduleItemSchema = z.object({
   categoryId: z.string(),
   unitPrice: z.number().nonnegative(),
   quantity: z.number().int().positive(),
+  // Unresolved short-code from a Google import that matched multiple products —
+  // shown in the editor so the worker picks the right one. Form-only (not stored).
+  rawCode: z.string().optional(),
 });
 
 export const scheduleSchema = z.object({
