@@ -175,6 +175,11 @@ export default function ScheduleFormModal({
   const { user } = useAuth();
   const [staffs, setStaffs] = useState<Staff[]>([]);
   const [loading, setLoading] = useState(isEdit);
+  // Pre-loaded candidates for unresolved import hints, so the dropdowns show the
+  // matches for the code/alias instead of every product/customer.
+  const [pendingProductOpts, setPendingProductOpts] = useState<Record<string, ProductOption[]>>({});
+  const [pendingCustomerAlias, setPendingCustomerAlias] = useState('');
+  const [pendingCustomerOpts, setPendingCustomerOpts] = useState<CustomerOption[]>([]);
 
   useEffect(() => {
     document.body.style.overflow = 'hidden';
@@ -214,41 +219,6 @@ export default function ScheduleFormModal({
   const watchedItems = watch('items');
   const { fields, append, remove } = useFieldArray({ control, name: 'items' });
 
-  useEffect(() => {
-    getStaffs()
-      .then((data: Staff[]) => {
-        setStaffs(data);
-        if (!isEdit && user?.staffId) {
-          setValue('staffId', user.staffId);
-          setValue('staffName', user.staffName || '');
-        }
-      })
-      .catch(() => setStaffs([]));
-
-    if (isEdit && scheduleId) {
-      getSchedule(scheduleId).then((schedule: Record<string, unknown>) => {
-        const keys = Object.keys(schedule) as (keyof ScheduleFormData)[];
-        for (const key of keys) {
-          if (key === 'startAt' || key === 'endAt') {
-            setValue(key, snapTo15(toDatetimeLocal(schedule[key] as string)));
-          } else {
-            setValue(key, schedule[key] as never);
-          }
-        }
-        // Imported codes that matched multiple products (or none) become empty
-        // rows pre-loaded with the code, for the worker to pick from the dropdown.
-        const pending = String(schedule.pendingCodes ?? '')
-          .split(',')
-          .map(s => s.trim())
-          .filter(Boolean);
-        for (const code of pending) {
-          append({ productId: '', productName: '', maker: '', categoryId: '', unitPrice: 0, quantity: 1, rawCode: code });
-        }
-        setLoading(false);
-      });
-    }
-  }, [scheduleId, isEdit, setValue, user?.staffId, user?.staffName]);
-
   const loadProductOptions = async (q: string): Promise<ProductOption[]> => {
     const data = await searchProducts(q);
     return (data as Array<{ productId: string; productName: string; unitPrice: number; maker: string; categoryId: string }>).map(p => ({
@@ -268,6 +238,87 @@ export default function ScheduleFormModal({
       label: c.customerName,
     }));
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const staffData = await getStaffs().catch(() => [] as Staff[]);
+      if (cancelled) return;
+      setStaffs(staffData);
+      if (!isEdit && user?.staffId) {
+        setValue('staffId', user.staffId);
+        setValue('staffName', user.staffName || '');
+      }
+      if (!isEdit || !scheduleId) return;
+
+      const schedule = (await getSchedule(scheduleId)) as Record<string, unknown> | null;
+      if (cancelled) return;
+      if (!schedule) {
+        setLoading(false);
+        return;
+      }
+
+      const keys = Object.keys(schedule) as (keyof ScheduleFormData)[];
+      for (const key of keys) {
+        if (key === 'startAt' || key === 'endAt') {
+          setValue(key, snapTo15(toDatetimeLocal(schedule[key] as string)));
+        } else {
+          setValue(key, schedule[key] as never);
+        }
+      }
+
+      // Staff: import stores only the calendar's staff name, not the id, so the
+      // dropdown shows blank. Resolve the name against the staff list to pre-select.
+      const sId = String(schedule.staffId ?? '');
+      const sName = String(schedule.staffName ?? '');
+      if (!sId && sName) {
+        const first = sName.split(/\s+/)[0];
+        const match =
+          staffData.find((s: Staff) => s.staffName === sName) ||
+          staffData.find((s: Staff) => sName.includes(s.staffName)) ||
+          staffData.find((s: Staff) => first && (s.staffName.includes(first) || s.staffName.startsWith(first)));
+        if (match) {
+          setValue('staffId', match.staffId);
+          setValue('staffName', match.staffName);
+        }
+      }
+
+      // Customer: imported drafts leave customerId blank with the alias in
+      // pendingCustomer. Pre-load candidates (matching the Japanese part) so the
+      // worker selects from a short list rather than every customer.
+      const custAlias = String(schedule.pendingCustomer ?? '').trim();
+      const hasCustomer = Boolean(String(schedule.customerId ?? '').trim());
+      if (custAlias && !hasCustomer) {
+        setPendingCustomerAlias(custAlias);
+        const q = custAlias.replace(/[a-zA-Z0-9]/g, '').trim() || custAlias;
+        const opts = await loadCustomerOptions(q).catch(() => [] as CustomerOption[]);
+        if (!cancelled) setPendingCustomerOpts(opts);
+      }
+
+      // Products: each unresolved code becomes a pre-seeded row; pre-load its
+      // candidates so tapping the dropdown shows matches for that code.
+      const pending = String(schedule.pendingCodes ?? '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+      const optsByCode: Record<string, ProductOption[]> = {};
+      await Promise.all(
+        pending.map(async code => {
+          optsByCode[code] = await loadProductOptions(code).catch(() => [] as ProductOption[]);
+        }),
+      );
+      if (cancelled) return;
+      setPendingProductOpts(optsByCode);
+      for (const code of pending) {
+        append({ productId: '', productName: '', maker: '', categoryId: '', unitPrice: 0, quantity: 1, rawCode: code });
+      }
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scheduleId, isEdit, setValue, append, user?.staffId, user?.staffName]);
 
   const onSubmit = async (data: ScheduleFormData) => {
     const toISO = (local: string) => new Date(local).toISOString();
@@ -403,9 +454,16 @@ export default function ScheduleFormModal({
 
             <div>
               <label className={labelClass}>会員(取引先)</label>
+              {pendingCustomerAlias && !watch('customerId') && (
+                <div className="mb-1 text-xs font-medium text-amber-600">
+                  未確定取引先「{pendingCustomerAlias}」— 候補から選択してください
+                </div>
+              )}
               <AsyncSelect
                 loadOptions={loadCustomerOptions}
-                defaultOptions
+                defaultOptions={
+                  pendingCustomerAlias && !watch('customerId') ? pendingCustomerOpts : true
+                }
                 value={
                   watch('customerId')
                     ? { value: watch('customerId'), label: watch('customerName') }
@@ -415,7 +473,11 @@ export default function ScheduleFormModal({
                   setValue('customerId', selected?.value || '');
                   setValue('customerName', selected?.label || '');
                 }}
-                placeholder="検索してください"
+                placeholder={
+                  pendingCustomerAlias && !watch('customerId')
+                    ? `「${pendingCustomerAlias}」の候補`
+                    : '検索してください'
+                }
                 styles={selectStyles as never}
                 noOptionsMessage={() => '該当なし'}
                 loadingMessage={() => '検索中...'}
@@ -473,8 +535,7 @@ export default function ScheduleFormModal({
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                         <AsyncSelect
                           loadOptions={loadProductOptions}
-                          defaultOptions
-                          defaultInputValue={pendingCode}
+                          defaultOptions={pendingCode ? (pendingProductOpts[pendingCode] ?? []) : true}
                           value={
                             currentItem?.productId
                               ? {

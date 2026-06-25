@@ -136,85 +136,6 @@ async function matchProductByCode(code: string): Promise<ProductMatch | null> {
   return rows.length === 1 ? rows[0] : null;
 }
 
-interface CustomerMatch {
-  customerId: string;
-}
-
-/** All customers, cached so fuzzy matching doesn't re-query the table per event. */
-let customerCache: Array<{ customerId: string; customerName: string }> | null = null;
-let customerCacheAt = 0;
-const CUSTOMER_CACHE_TTL_MS = 5 * 60 * 1000;
-
-async function loadCustomers(): Promise<Array<{ customerId: string; customerName: string }>> {
-  if (customerCache && Date.now() - customerCacheAt < CUSTOMER_CACHE_TTL_MS) return customerCache;
-  customerCache = await query<{ customerId: string; customerName: string }>(
-    `SELECT "customerId", "customerName" FROM "Customer"`,
-  );
-  customerCacheAt = Date.now();
-  return customerCache;
-}
-
-/** True if every char of `needle` appears in `hay` in order (subsequence). */
-function isSubsequence(needle: string, hay: string): boolean {
-  let i = 0;
-  for (const ch of hay) {
-    if (i < needle.length && ch === needle[i]) i++;
-    if (i === needle.length) return true;
-  }
-  return i === needle.length;
-}
-
-/**
- * Score how well a calendar alias (e.g. "PT駒沢") matches a customer name. The
- * alias is a loose handle — the real name may contain only some of its chars,
- * in any arrangement — so we rank by how much of the alias the name covers,
- * with a bonus when the chars appear in order. 0 = no overlap at all.
- */
-function customerRelevance(alias: string, name: string): number {
-  const a = alias.toLowerCase().replace(/[\s　]/g, '');
-  const n = name.toLowerCase().replace(/[\s　]/g, '');
-  if (!a || !n) return 0;
-  const distinct = [...new Set(a)];
-  const present = distinct.filter(ch => n.includes(ch)).length;
-  if (present === 0) return 0;
-  const coverage = present / distinct.length; // how much of the alias the name covers (0..1)
-  const ordered = isSubsequence(a, n) ? 1 : 0; // bonus when alias chars appear in order
-  return coverage * 2 + ordered;
-}
-
-/**
- * Pick a customer for an alias — always a valid, existing customer so the
- * Schedule.customerId foreign key is satisfied (the column is never left blank).
- * Returns the single most relevant fuzzy match; if nothing overlaps the alias,
- * falls back to the first customer in the table. Null only when there are no
- * customers at all.
- */
-async function matchCustomerByAbbrev(alias: string): Promise<CustomerMatch | null> {
-  const customers = await loadCustomers();
-  if (customers.length === 0) return null;
-
-  // Aliases carry a latin prefix (e.g. "TN荒川") that doesn't appear in the real
-  // name and was causing wrong matches — match on the Japanese part ("荒川"). If
-  // the alias is all-latin, fall back to the original so we still try.
-  const stripped = alias.replace(/[a-zA-Z0-9]/g, '').trim();
-  const key = stripped || alias;
-
-  let best: { customerId: string; customerName: string } | null = null;
-  let bestScore = 0;
-  if (key) {
-    for (const c of customers) {
-      const score = customerRelevance(key, c.customerName);
-      if (score <= 0) continue;
-      if (score > bestScore || (score === bestScore && best !== null && c.customerName.length < best.customerName.length)) {
-        best = c;
-        bestScore = score;
-      }
-    }
-  }
-  // No relevant match → fall back to the first customer so the FK still resolves.
-  return { customerId: (best ?? customers[0]).customerId };
-}
-
 async function alreadyImported(eventId: string): Promise<boolean> {
   const row = await queryOne<{ id: number }>(
     `SELECT id FROM "Schedule" WHERE "googleEventId" = $1`,
@@ -243,8 +164,9 @@ async function importEvent(
   const titleP = parseEventTitle(title, ctx.prefixes);
   const locP = parseEventLocation(event.location ?? '');
 
-  // Resolve customer (1 hit only — otherwise leave for manual selection).
-  const matchedCustomer = await matchCustomerByAbbrev(locP.customerAbbrev);
+  // Customer is NOT auto-confirmed — the alias (e.g. "TN荒川") is often
+  // ambiguous, so leave it unselected and keep the alias for the worker to pick
+  // from candidates in the editor.
 
   // Resolve each product code. A code with exactly one match is auto-filled; a
   // code with multiple matches (or none) can't be safely auto-picked, so it's
@@ -282,8 +204,9 @@ async function importEvent(
       description: memo,
       startAt: new Date(start).toISOString(),
       endAt: new Date(end).toISOString(),
-      customerId: matchedCustomer?.customerId ?? '',
-      // staffId is left blank — worker picks the matching Smaregi staff.
+      // Left blank (NULL) for manual selection; the alias is kept in pendingCustomer.
+      customerId: '',
+      // staffId is left blank — the editor resolves it from staffName on load.
       // Calendar summary is the most reliable hint to populate staffName.
       staffId: '',
       staffName: ctx.calendarSummary,
@@ -292,6 +215,7 @@ async function importEvent(
       showComiPack: true,
       status: 'draft',
       pendingCodes: pendingCodes.join(','),
+      pendingCustomer: locP.customerAbbrev,
     },
     items,
     { google: { eventId: event.id, calendarId: ctx.calendarId } },
