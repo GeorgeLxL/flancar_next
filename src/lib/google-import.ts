@@ -36,15 +36,15 @@ const LOGIN_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 /** Manual "Google取込" button window — 1 week, to catch recently-created events. */
 const FULL_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** Parse GOOGLE_CALENDAR_TITLE_PREFIX (comma-separated) into a list. */
+/**
+ * Recognized title prefixes = built-in defaults ∪ GOOGLE_CALENDAR_TITLE_PREFIX.
+ * The defaults are always included so a stale env var can't silently drop one
+ * (e.g. 発送); the env var can only ADD extra prefixes.
+ */
 function loadPrefixes(): string[] {
   const raw = process.env.GOOGLE_CALENDAR_TITLE_PREFIX;
-  if (!raw) return DEFAULT_PREFIXES;
-  const items = raw
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-  return items.length > 0 ? items : DEFAULT_PREFIXES;
+  const fromEnv = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  return [...new Set([...DEFAULT_PREFIXES, ...fromEnv])];
 }
 
 /** Return the matching prefix if the title starts with any of them, else null. */
@@ -136,6 +136,26 @@ async function matchProductByCode(code: string): Promise<ProductMatch | null> {
   return rows.length === 1 ? rows[0] : null;
 }
 
+interface CustomerMatch {
+  customerId: string;
+}
+
+/**
+ * Find ONE customer for a location alias. Matches on the Japanese part of the
+ * alias (the latin prefix like "TN" isn't in the real name). Exactly one hit →
+ * auto-confirm; zero or several → return null so the worker selects manually.
+ */
+async function matchCustomerUnique(alias: string): Promise<CustomerMatch | null> {
+  const jp = alias.replace(/[a-zA-Z0-9]/g, '').trim();
+  const key = jp || alias.trim();
+  if (!key) return null;
+  const rows = await query<CustomerMatch>(
+    `SELECT "customerId" FROM "Customer" WHERE "customerName" ILIKE $1 LIMIT 2`,
+    [`%${key}%`],
+  );
+  return rows.length === 1 ? rows[0] : null;
+}
+
 async function alreadyImported(eventId: string): Promise<boolean> {
   const row = await queryOne<{ id: number }>(
     `SELECT id FROM "Schedule" WHERE "googleEventId" = $1`,
@@ -164,9 +184,9 @@ async function importEvent(
   const titleP = parseEventTitle(title, ctx.prefixes);
   const locP = parseEventLocation(event.location ?? '');
 
-  // Customer is NOT auto-confirmed — the alias (e.g. "TN荒川") is often
-  // ambiguous, so leave it unselected and keep the alias for the worker to pick
-  // from candidates in the editor.
+  // Customer: one match → auto-confirm; several/none → leave blank with the
+  // alias kept (pendingCustomer) so the worker selects from candidates.
+  const matchedCustomer = await matchCustomerUnique(locP.customerAbbrev);
 
   // Resolve each product code. A code with exactly one match is auto-filled; a
   // code with multiple matches (or none) can't be safely auto-picked, so it's
@@ -191,21 +211,19 @@ async function importEvent(
   const end = event.end?.dateTime ?? event.end?.date;
   if (!start || !end) return 'no-time';
 
-  // Description: 1st line is the customer name (お客様名); later lines are memos /
-  // slip numbers, kept in the schedule description but not treated as the name.
-  const descLines = (event.description ?? '').split(/\r?\n/).map(l => l.trim());
-  const customerName = descLines[0] ?? '';
-  const memo = descLines.slice(1).filter(Boolean).join('\n');
+  // Description: only the 1st line is used — the customer name (お客様名). Lines
+  // 2+ (memos / slip numbers) are skipped per the client's request.
+  const customerName = (event.description ?? '').split(/\r?\n/)[0]?.trim() ?? '';
 
   await createSchedule(
     {
       title: stripMarkers(title).trim(),
       carType: titleP.carType,
-      description: memo,
+      description: '',
       startAt: new Date(start).toISOString(),
       endAt: new Date(end).toISOString(),
-      // Left blank (NULL) for manual selection; the alias is kept in pendingCustomer.
-      customerId: '',
+      // One match → confirm; otherwise blank (NULL) with the alias kept below.
+      customerId: matchedCustomer?.customerId ?? '',
       // staffId is left blank — the editor resolves it from staffName on load.
       // Calendar summary is the most reliable hint to populate staffName.
       staffId: '',
@@ -215,7 +233,7 @@ async function importEvent(
       showComiPack: true,
       status: 'draft',
       pendingCodes: pendingCodes.join(','),
-      pendingCustomer: locP.customerAbbrev,
+      pendingCustomer: matchedCustomer ? '' : locP.customerAbbrev,
     },
     items,
     { google: { eventId: event.id, calendarId: ctx.calendarId } },
