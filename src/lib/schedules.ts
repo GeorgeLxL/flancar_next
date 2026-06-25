@@ -16,7 +16,7 @@ interface ScheduleRow {
   description: string | null;
   startAt: Date;
   endAt: Date;
-  customerId: string;
+  customerId: string | null;
   staffId: string;
   staffName: string;
   customer: string;
@@ -29,16 +29,23 @@ interface ScheduleRow {
   googleSyncedAt: Date | null;
   googleSyncError: string | null;
   pendingCodes: string | null;
+  pendingCustomer: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
-// Adds the `pendingCodes` column to existing databases on first use, so no
-// manual migration is needed. Cached — runs at most once per process.
+// Brings existing databases up to date on first use, so no manual migration is
+// needed. Cached — runs at most once per process. All statements are idempotent.
 let scheduleSchemaReady = false;
 async function ensureScheduleSchema(): Promise<void> {
   if (scheduleSchemaReady) return;
+  // Unresolved import hints awaiting manual selection in the editor.
   await query(`ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "pendingCodes" TEXT`);
+  await query(`ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "pendingCustomer" TEXT`);
+  // Imported drafts may have no customer yet (worker picks it), so customerId
+  // must allow NULL. The FK is kept — NULL is exempt from FK checks, so a blank
+  // customer is allowed while real ids still reference a valid Customer row.
+  await query(`ALTER TABLE "Schedule" ALTER COLUMN "customerId" DROP NOT NULL`);
   scheduleSchemaReady = true;
 }
 
@@ -68,6 +75,8 @@ export interface ScheduleInput {
   status?: ScheduleStatus;
   /** Comma-separated product short-codes still needing manual selection. */
   pendingCodes?: string;
+  /** Customer alias from the calendar, awaiting manual selection. */
+  pendingCustomer?: string;
 }
 
 export interface ScheduleItemInput {
@@ -84,7 +93,8 @@ function sanitizeSchedule(data: ScheduleInput) {
     description: data.description ?? '',
     startAt: data.startAt ? new Date(data.startAt) : new Date(),
     endAt: data.endAt ? new Date(data.endAt) : new Date(),
-    customerId: data.customerId ?? '',
+    // Empty → NULL so a not-yet-selected customer satisfies the FK (NULL is exempt).
+    customerId: data.customerId && data.customerId.trim() ? data.customerId : null,
     staffId: data.staffId ?? '',
     staffName: data.staffName ?? '',
     customer: data.customer ?? '',
@@ -92,6 +102,7 @@ function sanitizeSchedule(data: ScheduleInput) {
     showComiPack: Boolean(data.showComiPack),
     status: (data.status ?? 'draft') as ScheduleStatus,
     pendingCodes: data.pendingCodes ?? '',
+    pendingCustomer: data.pendingCustomer ?? '',
   };
 }
 
@@ -126,10 +137,12 @@ async function loadScheduleAggregate(id: number) {
     [id],
   );
 
-  const customer = await queryOne<{ customerName: string; faxNumber: string | null }>(
-    `SELECT "customerName", "faxNumber" FROM "Customer" WHERE "customerId" = $1`,
-    [schedule.customerId],
-  );
+  const customer = schedule.customerId
+    ? await queryOne<{ customerName: string; faxNumber: string | null }>(
+        `SELECT "customerName", "faxNumber" FROM "Customer" WHERE "customerId" = $1`,
+        [schedule.customerId],
+      )
+    : null;
 
   const categoryIds = [...new Set(items.map(i => i.categoryId).filter(Boolean))];
   const categories = categoryIds.length
@@ -188,7 +201,7 @@ async function loadSchedulesAggregate(rows: ScheduleRow[]) {
 
   return rows.map(r => ({
     ...r,
-    customerName: customerMap.get(r.customerId) ?? '',
+    customerName: customerMap.get(r.customerId ?? '') ?? '',
     items: (itemsBySchedule.get(r.id) ?? []).map(i => ({
       id: i.id,
       scheduleId: i.scheduleId,
@@ -334,9 +347,9 @@ export async function createSchedule(
       `INSERT INTO "Schedule"
          (title, "carType", description, "startAt", "endAt", "customerId", "staffId", "staffName",
           customer, requester, "showComiPack", "pdfNumber", status,
-          "googleEventId", "googleCalendarId", "googleSyncedAt", "pendingCodes", "updatedAt")
+          "googleEventId", "googleCalendarId", "googleSyncedAt", "pendingCodes", "pendingCustomer", "updatedAt")
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-               CASE WHEN $14::text IS NOT NULL THEN NOW() ELSE NULL END, $16, NOW())
+               CASE WHEN $14::text IS NOT NULL THEN NOW() ELSE NULL END, $16, $17, NOW())
        RETURNING *`,
       [
         data.title,
@@ -355,6 +368,7 @@ export async function createSchedule(
         options.google?.eventId ?? null,
         options.google?.calendarId ?? null,
         data.pendingCodes,
+        data.pendingCustomer,
       ],
     );
     const id = inserted.rows[0].id;
@@ -389,7 +403,7 @@ export async function updateSchedule(id: number, input: ScheduleInput, items: Sc
       `UPDATE "Schedule"
           SET title=$1, "carType"=$2, description=$3, "startAt"=$4, "endAt"=$5,
               "customerId"=$6, "staffId"=$7, "staffName"=$8, customer=$9, requester=$10,
-              "showComiPack"=$11, status=$12, "pendingCodes"='', "updatedAt"=NOW()
+              "showComiPack"=$11, status=$12, "pendingCodes"='', "pendingCustomer"='', "updatedAt"=NOW()
         WHERE id=$13`,
       [
         data.title,

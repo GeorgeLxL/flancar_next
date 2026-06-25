@@ -116,12 +116,15 @@ function buildEventBody(schedule: ScheduleForSync) {
     schedule.description ? '\n' + schedule.description : null,
   ].filter(Boolean);
 
+  // NOTE: `location` is intentionally NOT set. The staff type the location field
+  // in Google Calendar themselves (取引先/依頼者/金額/受注者), and a patch that
+  // omits it leaves their original value untouched. Writing it here would
+  // overwrite what they entered.
   return {
     summary: schedule.title || '(無題)',
     description: lines.join('\n'),
     start: { dateTime: new Date(schedule.startAt).toISOString(), timeZone: TIME_ZONE },
     end: { dateTime: new Date(schedule.endAt).toISOString(), timeZone: TIME_ZONE },
-    location: schedule.customerName || undefined,
   };
 }
 

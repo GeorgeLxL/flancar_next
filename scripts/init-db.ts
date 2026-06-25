@@ -86,8 +86,12 @@ ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "googleEventId" TEXT;
 ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "googleCalendarId" TEXT;
 ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "googleSyncedAt" TIMESTAMPTZ;
 ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "googleSyncError" TEXT;
--- Unresolved Google-import product short-codes awaiting manual selection.
+-- Unresolved Google-import hints awaiting manual selection in the editor.
 ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "pendingCodes" TEXT;
+ALTER TABLE "Schedule" ADD COLUMN IF NOT EXISTS "pendingCustomer" TEXT;
+-- Imported drafts may have no customer yet (worker picks it); allow NULL. The FK
+-- is kept (NULL is exempt), so real ids still reference a valid Customer.
+ALTER TABLE "Schedule" ALTER COLUMN "customerId" DROP NOT NULL;
 
 -- Unique partial index so a given Google event can only ever map to one Schedule.
 -- Phase 2 (Google → App) relies on this for idempotent imports.
