@@ -151,7 +151,10 @@ interface CustomerOption {
   label: string;
 }
 
-async function attachPdfToGoogleEvent(scheduleId: number, schedule: PDFSchedule) {
+async function attachPdfToGoogleEvent(
+  scheduleId: number,
+  schedule: PDFSchedule,
+): Promise<{ ok: boolean; error?: string }> {
   // Need fonts registered before rendering — same call PDFPreview makes.
   ensureFont();
   const doc = <SchedulePDF schedule={schedule} pageCount={4} quotedDate="" />;
@@ -160,7 +163,12 @@ async function attachPdfToGoogleEvent(scheduleId: number, schedule: PDFSchedule)
   const form = new FormData();
   form.append('pdf', blob, fileName);
   form.append('scheduleId', String(scheduleId));
-  await fetch('/google/attach-pdf', { method: 'POST', credentials: 'include', body: form });
+  const res = await fetch('/google/attach-pdf', { method: 'POST', credentials: 'include', body: form });
+  try {
+    return (await res.json()) as { ok: boolean; error?: string };
+  } catch {
+    return { ok: res.ok };
+  }
 }
 
 export default function ScheduleFormModal({
@@ -351,9 +359,11 @@ export default function ScheduleFormModal({
       // schedule's Google Calendar event. Doesn't block the UI; failures only
       // show up in the console (and on the row's googleSyncError column).
       if (savedId && saved) {
-        void attachPdfToGoogleEvent(savedId, saved as unknown as PDFSchedule).catch(err =>
-          console.error('Google PDF attach failed:', err),
-        );
+        void attachPdfToGoogleEvent(savedId, saved as unknown as PDFSchedule)
+          .then(r => {
+            if (r && !r.ok) toast.error(`PDF添付に失敗しました: ${r.error ?? '不明なエラー'}`);
+          })
+          .catch(err => console.error('Google PDF attach failed:', err));
       }
     } catch {
       toast.error('保存に失敗しました。');

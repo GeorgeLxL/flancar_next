@@ -12,7 +12,7 @@ import {
 } from 'react-scheduled-calendar';
 import 'react-scheduled-calendar/styles.css';
 import { usePathname } from 'next/navigation';
-import { getSchedulesByRange, getStaffColors } from '@/lib/api';
+import { getSchedulesByRange, getStaffColors, getStaffs } from '@/lib/api';
 import { useAuth } from './AuthContext';
 import { useCalendar } from './CalendarContext';
 
@@ -23,6 +23,7 @@ export interface CalendarEvent {
   endAt: string;
   status: 'draft' | 'pending' | 'sent' | 'finished';
   staffId: string;
+  staffName: string;
   customerName: string;
   requester: string;
   items: { unitPrice: number; quantity: number }[];
@@ -30,6 +31,7 @@ export interface CalendarEvent {
 
 interface FlancarMeta {
   status: CalendarEvent['status'];
+  staffName: string;
   customerName: string;
   requester: string;
   items: { unitPrice: number; quantity: number }[];
@@ -58,23 +60,38 @@ const STATUS_LABEL: Record<CalendarEvent['status'], string> = {
   finished: '完了',
 };
 
-// Picks the visible color for an event: explicit staff color wins, status palette is the fallback.
-function resolveColor(staffId: string, status: CalendarEvent['status'], staffColors: Record<string, string>): string {
-  return staffColors[staffId] ?? STATUS_COLOR_HEX[status];
+// Picks the visible color for an event: explicit staff color wins, status palette
+// is the fallback. Imported drafts have no staffId yet, so fall back to resolving
+// the staff by name (via resolveStaffId) — this shows the staff color before the
+// draft is ever opened/saved.
+function resolveColor(
+  staffId: string,
+  staffName: string,
+  status: CalendarEvent['status'],
+  staffColors: Record<string, string>,
+  resolveStaffId: (name: string) => string,
+): string {
+  const id = staffId || (staffName ? resolveStaffId(staffName) : '');
+  return staffColors[id] ?? STATUS_COLOR_HEX[status];
 }
 
 // Re-shape what the API returns into the package's generic CalendarEvent shape,
 // stashing all FlanCar-specific fields on `meta` so `renderEvent` can use them.
-function toRsEvent(e: CalendarEvent, staffColors: Record<string, string>): RSCalendarEvent<FlancarMeta> {
+function toRsEvent(
+  e: CalendarEvent,
+  staffColors: Record<string, string>,
+  resolveStaffId: (name: string) => string,
+): RSCalendarEvent<FlancarMeta> {
   return {
     id: e.id,
     title: e.title,
     start: e.startAt,
     end: e.endAt,
-    color: resolveColor(e.staffId, e.status, staffColors),
+    color: resolveColor(e.staffId, e.staffName, e.status, staffColors, resolveStaffId),
     category: e.staffId,
     meta: {
       status: e.status,
+      staffName: e.staffName,
       customerName: e.customerName,
       requester: e.requester,
       items: e.items,
@@ -92,6 +109,7 @@ function fromRsEvent(e: RSCalendarEvent<FlancarMeta>): CalendarEvent {
     endAt: typeof e.end === 'string' ? e.end : e.end.toISOString(),
     status: e.meta?.status ?? 'draft',
     staffId: e.category ?? '',
+    staffName: e.meta?.staffName ?? '',
     customerName: e.meta?.customerName ?? '',
     requester: e.meta?.requester ?? '',
     items: e.meta?.items ?? [],
@@ -111,13 +129,29 @@ export default function Calendar({
   const { user } = useAuth();
   const [apiEvents, setApiEvents] = useState<CalendarEvent[]>([]);
   const [staffColors, setStaffColors] = useState<Record<string, string>>({});
+  const [staffs, setStaffs] = useState<{ staffId: string; staffName: string }[]>([]);
   const [liveTick, setLiveTick] = useState(0);
+
+  // Resolve a (possibly partial) staff name to its id — so imported drafts that
+  // only carry the calendar's staff name (e.g. "後川") still get the staff color.
+  const resolveStaffId = useMemo(() => {
+    return (name: string): string => {
+      if (!name) return '';
+      const first = name.split(/\s+/)[0];
+      const m =
+        staffs.find(s => s.staffName === name) ||
+        staffs.find(s => name.includes(s.staffName)) ||
+        staffs.find(s => first && (s.staffName.includes(first) || s.staffName.startsWith(first)));
+      return m?.staffId ?? '';
+    };
+  }, [staffs]);
 
   const switchTo = pathname.includes('/worker') ? '/clerk' : '/worker';
   const switchLabel = pathname.includes('/worker') ? '店舗' : 'スケジュール';
 
   useEffect(() => {
     getStaffColors().then(setStaffColors).catch(() => {});
+    getStaffs().then(setStaffs).catch(() => {});
   }, [refreshKey]);
 
   useEffect(() => {
@@ -133,8 +167,8 @@ export default function Calendar({
   }, []);
 
   const events = useMemo(
-    () => apiEvents.map(e => toRsEvent(e, staffColors)),
-    [apiEvents, staffColors],
+    () => apiEvents.map(e => toRsEvent(e, staffColors, resolveStaffId)),
+    [apiEvents, staffColors, resolveStaffId],
   );
 
   return (

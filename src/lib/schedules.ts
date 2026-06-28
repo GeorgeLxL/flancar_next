@@ -1,10 +1,6 @@
 import { format } from 'date-fns';
 import { query, queryOne, withTransaction } from './db';
-import {
-  createScheduleEvent,
-  deleteScheduleEvent,
-  updateScheduleEvent,
-} from './google-sync';
+import { createScheduleEvent, updateScheduleEvent } from './google-sync';
 import { googleConfigured } from './google';
 
 export type ScheduleStatus = 'draft' | 'pending' | 'sent' | 'finished';
@@ -306,14 +302,6 @@ async function syncToGoogleAfterUpdate(id: number): Promise<void> {
   await recordSyncResult(id, result.ok, result.eventId, result.calendarId, result.error);
 }
 
-async function syncToGoogleAfterDelete(
-  current: { eventId: string | null; calendarId: string | null },
-): Promise<void> {
-  if (!googleConfigured()) return;
-  if (!current.eventId || !current.calendarId) return;
-  await deleteScheduleEvent({ eventId: current.eventId, calendarId: current.calendarId });
-}
-
 export interface CreateScheduleOptions {
   /**
    * If set, the schedule is being imported FROM Google and we already know
@@ -438,18 +426,10 @@ export async function updateSchedule(id: number, input: ScheduleInput, items: Sc
 }
 
 export async function deleteSchedule(id: number) {
-  // Read the Google linkage before we drop the row.
-  const existing = await queryOne<{ googleEventId: string | null; googleCalendarId: string | null }>(
-    `SELECT "googleEventId", "googleCalendarId" FROM "Schedule" WHERE id = $1`,
-    [id],
-  );
+  // Only remove the app-side record — the Google Calendar event is left intact
+  // (Google Calendar is the source of truth). If the event is still within the
+  // sync window, the next 「Google取込」 will simply re-import it as a new draft.
   const result = await query(`DELETE FROM "Schedule" WHERE id = $1 RETURNING id`, [id]);
-  if (result.length > 0 && existing) {
-    void syncToGoogleAfterDelete({
-      eventId: existing.googleEventId,
-      calendarId: existing.googleCalendarId,
-    }).catch(err => console.error('Google sync (delete) failed:', err));
-  }
   return result.length > 0;
 }
 
