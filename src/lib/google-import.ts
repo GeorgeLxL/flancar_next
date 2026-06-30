@@ -87,8 +87,14 @@ export function parseEventTitle(rawTitle: string, prefixes: string[] | string): 
   const list = Array.isArray(prefixes) ? prefixes : [prefixes];
   // 1) Drop status symbols (✔️ ⬜️ △ …).
   let t = stripMarkers(rawTitle);
-  // 2) Drop codes the staff bracket as "not for the estimate" — 「…」 / 【…】.
-  t = t.replace(/「[^」]*」/g, ' ').replace(/【[^】]*】/g, ' ').trim();
+  // 2) Drop codes the staff bracket as "not for the estimate" — 「…」, 【…】, and
+  //    （…） / (…). Any bracketed segment is excluded from the product codes.
+  t = t
+    .replace(/「[^」]*」/g, ' ')
+    .replace(/【[^】]*】/g, ' ')
+    .replace(/（[^）]*）/g, ' ')
+    .replace(/\([^)]*\)/g, ' ')
+    .trim();
   // 3) Strip the leading marker (新 / 商 / 発送 …).
   const matched = matchPrefix(t, list);
   if (matched) t = t.slice(matched.length).trim();
