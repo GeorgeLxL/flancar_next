@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { format } from 'date-fns';
-import { BlobProvider, Document, Font, Image, Page, StyleSheet, Text, View } from '@react-pdf/renderer';
+import toast from 'react-hot-toast';
+import Swal from 'sweetalert2';
+import { BlobProvider, Document, Font, Image, Page, StyleSheet, Text, View, pdf } from '@react-pdf/renderer';
 
 const PDF_TYPES = {
   estimate: '御 見 積 書',
@@ -159,6 +161,7 @@ export interface Schedule {
   startAt: string;
   endAt: string;
   customerName: string;
+  customerFaxNumber?: string;
   storeName?: string;
   staffId: string;
   staffName: string;
@@ -428,6 +431,7 @@ export default function PDFPreview({
 }) {
   const [pageCount, setPageCount] = useState<PdfPageCount>(1);
   const [quotedDate, setQuotedDate] = useState('');
+  const [sending, setSending] = useState(false);
 
   useEffect(() => {
     ensureFont();
@@ -439,15 +443,59 @@ export default function PDFPreview({
     [schedule, pageCount, quotedDate],
   );
 
-  // Reference the prop so TS doesn't complain while the eFax UI is between
-  // implementations (Telnyx removed; netfax.jp pending).
-  void onSendPdf;
-  void status;
+  const handleSendFax = async () => {
+    const { value } = await Swal.fire({
+      title: 'FAX送信',
+      input: 'text',
+      inputLabel: '送信先FAX番号',
+      inputValue: schedule.customerFaxNumber ?? '',
+      showCancelButton: true,
+      confirmButtonText: '送信する',
+      cancelButtonText: 'キャンセル',
+      confirmButtonColor: '#dc2626',
+    });
+    if (value === undefined) return; // cancelled
+    const fax = String(value).trim();
+    if (!fax) {
+      toast.error('FAX番号を入力してください。');
+      return;
+    }
+    setSending(true);
+    try {
+      const blob = await pdf(document).toBlob();
+      const form = new FormData();
+      form.append('pdf', blob, fileName);
+      form.append('scheduleId', String(schedule.id));
+      form.append('fax', fax);
+      const res = await fetch('/netfax/send', { method: 'POST', credentials: 'include', body: form });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (data.ok) {
+        toast.success('FAXを送信しました。');
+        await onSendPdf?.();
+      } else {
+        toast.error(`FAX送信に失敗しました: ${data.error ?? '不明なエラー'}`);
+      }
+    } catch {
+      toast.error('FAX送信に失敗しました。');
+    } finally {
+      setSending(false);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-6xl p-6" onClick={event => event.stopPropagation()}>
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-bold">PDF プレビュー</h1>
+        {status !== 'finished' && (
+          <button
+            type="button"
+            onClick={handleSendFax}
+            disabled={sending}
+            className="rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+          >
+            {sending ? '送信中...' : 'FAX送信'}
+          </button>
+        )}
       </div>
       <div className="mb-4 grid grid-cols-1 items-center gap-4 sm:grid-cols-2">
         <div className="flex gap-2">

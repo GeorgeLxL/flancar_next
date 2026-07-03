@@ -88,12 +88,12 @@ function Clerk() {
     setSelected(null);
   };
 
-  // PDFPreview now performs the actual Telnyx send and updates the schedule
-  // status server-side. This callback just reflects the new state locally and
-  // closes the preview.
+  // PDFPreview performs the actual NetFax send and marks the schedule 送信済み
+  // (sent) server-side. This callback reflects the new state locally and closes
+  // the preview.
   const handleSendPdf = async () => {
     if (!selected) return;
-    syncLocalStatus(selected.id, 'pending');
+    syncLocalStatus(selected.id, 'sent');
     closeSelected();
   };
 
@@ -175,7 +175,7 @@ function Clerk() {
           >
             <div className="flex items-center justify-between border-b border-gray-100 p-4">
               <div className="flex gap-2">
-                {selected.status === 'pending' && (
+                {(selected.status === 'pending' || selected.status === 'sent') && (
                   <button
                     type="button"
                     onClick={() => handleFinishSchedule(selected.id)}
