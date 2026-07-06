@@ -42,19 +42,19 @@ export async function sendFax(opts: {
   const recipient: Record<string, string> = { fax };
   if (opts.sendto) recipient.sendto = opts.sendto.slice(0, 30);
 
-  const body = {
-    login_id,
-    login_pass,
-    doc_data: opts.pdfBase64,
-    list_data: [recipient],
-    req_id: opts.reqId.slice(0, 32),
-  };
+  // NetFax expects form-encoded fields; list_data is a JSON-encoded string.
+  const params = new URLSearchParams();
+  params.set('login_id', login_id);
+  params.set('login_pass', login_pass);
+  params.set('doc_data', opts.pdfBase64);
+  params.set('list_data', JSON.stringify([recipient]));
+  params.set('req_id', opts.reqId.slice(0, 32));
 
   try {
     const res = await fetch(NETFAX_ENDPOINT, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
     });
     const data = (await res.json().catch(() => ({}))) as {
       status?: number;
