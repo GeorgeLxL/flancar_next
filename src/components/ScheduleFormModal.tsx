@@ -154,7 +154,7 @@ interface CustomerOption {
 async function attachPdfToGoogleEvent(
   scheduleId: number,
   schedule: PDFSchedule,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; skipped?: boolean; error?: string }> {
   // Need fonts registered before rendering — same call PDFPreview makes.
   ensureFont();
   const doc = <SchedulePDF schedule={schedule} pageCount={4} quotedDate="" />;
@@ -165,7 +165,7 @@ async function attachPdfToGoogleEvent(
   form.append('scheduleId', String(scheduleId));
   const res = await fetch('/google/attach-pdf', { method: 'POST', credentials: 'include', body: form });
   try {
-    return (await res.json()) as { ok: boolean; error?: string };
+    return (await res.json()) as { ok: boolean; skipped?: boolean; error?: string };
   } catch {
     return { ok: res.ok };
   }
@@ -361,7 +361,9 @@ export default function ScheduleFormModal({
       if (savedId && saved) {
         void attachPdfToGoogleEvent(savedId, saved as unknown as PDFSchedule)
           .then(r => {
-            if (r && !r.ok) toast.error(`PDF添付に失敗しました: ${r.error ?? '不明なエラー'}`);
+            // Only alarm on genuine failures (e.g. Drive upload). "skipped" =
+            // benign (no calendar for this staff / Google not configured).
+            if (r && !r.ok && !r.skipped) toast.error(`PDF添付に失敗しました: ${r.error ?? '不明なエラー'}`);
           })
           .catch(err => console.error('Google PDF attach failed:', err));
       }
