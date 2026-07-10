@@ -30,7 +30,8 @@ export async function POST(req: NextRequest) {
   if ('response' in guard) return guard.response;
 
   if (!googleConfigured()) {
-    return NextResponse.json({ ok: false, error: 'google not configured' }, { status: 200 });
+    // Benign: nothing to attach to. `skipped` tells the client not to alarm the user.
+    return NextResponse.json({ ok: false, skipped: true, error: 'google not configured' }, { status: 200 });
   }
 
   let form: FormData;
@@ -66,7 +67,9 @@ export async function POST(req: NextRequest) {
       if (!schedule) return NextResponse.json({ error: 'schedule not found' }, { status: 404 });
       const created = await createScheduleEvent(schedule);
       if (!created.ok || !created.eventId || !created.calendarId) {
-        return NextResponse.json({ ok: false, error: created.error ?? 'create event failed' });
+        // No Google event could be created (e.g. the staff has no matching
+        // calendar). Not a real failure — skip attaching quietly.
+        return NextResponse.json({ ok: false, skipped: true, error: created.error ?? 'create event failed' });
       }
       await queryOne(
         `UPDATE "Schedule" SET "googleEventId" = $2, "googleCalendarId" = $3, "googleSyncedAt" = NOW() WHERE id = $1 RETURNING id`,
