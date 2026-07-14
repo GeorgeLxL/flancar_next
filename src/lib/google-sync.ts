@@ -100,10 +100,15 @@ function totalYen(items: ScheduleForSync['items']): number {
   return items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
 }
 
-function buildEventBody(schedule: ScheduleForSync) {
+// Everything from this marker down is the app's auto-added block. Anything the
+// user typed ABOVE it in Google Calendar is preserved across syncs.
+const INFO_MARKER = '━━━ 見積情報（自動） ━━━';
+
+/** The app's auto-generated info block (取引先 / 金額 / 担当 …). */
+function buildInfoBlock(schedule: ScheduleForSync): string {
   const total = totalYen(schedule.items);
   const tax = Math.floor(total * 0.1);
-  const lines = [
+  return [
     schedule.customerName ? `取引先: ${schedule.customerName}` : null,
     schedule.customer ? `お客様: ${schedule.customer}` : null,
     schedule.requester ? `ご依頼者: ${schedule.requester}` : null,
@@ -113,16 +118,30 @@ function buildEventBody(schedule: ScheduleForSync) {
     `税: ¥${tax.toLocaleString()}`,
     `合計: ¥${(total + tax).toLocaleString()}`,
     schedule.pdfNumber ? `伝票番号: ${schedule.pdfNumber}` : null,
-    schedule.description ? '\n' + schedule.description : null,
-  ].filter(Boolean);
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
 
+/**
+ * Merge the app's info block into the existing Google description, keeping
+ * whatever the user typed above the marker. On the first sync (no marker yet)
+ * the entire existing description is treated as the user's and preserved.
+ */
+function mergeDescription(existingDescription: string, infoBlock: string): string {
+  const existing = existingDescription ?? '';
+  const idx = existing.indexOf(INFO_MARKER);
+  const userPart = (idx >= 0 ? existing.slice(0, idx) : existing).trimEnd();
+  return userPart ? `${userPart}\n\n${INFO_MARKER}\n${infoBlock}` : `${INFO_MARKER}\n${infoBlock}`;
+}
+
+function buildEventBody(schedule: ScheduleForSync, existingDescription = '') {
   // NOTE: `location` is intentionally NOT set. The staff type the location field
   // in Google Calendar themselves (取引先/依頼者/金額/受注者), and a patch that
-  // omits it leaves their original value untouched. Writing it here would
-  // overwrite what they entered.
+  // omits it leaves their original value untouched.
   return {
     summary: schedule.title || '(無題)',
-    description: lines.join('\n'),
+    description: mergeDescription(existingDescription, buildInfoBlock(schedule)),
     start: { dateTime: new Date(schedule.startAt).toISOString(), timeZone: TIME_ZONE },
     end: { dateTime: new Date(schedule.endAt).toISOString(), timeZone: TIME_ZONE },
   };
@@ -169,10 +188,20 @@ export async function updateScheduleEvent(
       calendarId = newCalendarId;
     }
 
+    // Read the current description so user-entered lines are preserved (only the
+    // app's auto block below the marker is replaced).
+    let existingDescription = '';
+    try {
+      const cur = await calendar.events.get({ calendarId, eventId: current.eventId });
+      existingDescription = cur.data.description ?? '';
+    } catch {
+      /* fall back to just the info block */
+    }
+
     await calendar.events.patch({
       calendarId,
       eventId: current.eventId,
-      requestBody: buildEventBody(schedule),
+      requestBody: buildEventBody(schedule, existingDescription),
     });
     return { ok: true, eventId: current.eventId, calendarId };
   } catch (err) {
