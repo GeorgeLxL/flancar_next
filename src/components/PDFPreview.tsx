@@ -432,10 +432,38 @@ export default function PDFPreview({
   const [pageCount, setPageCount] = useState<PdfPageCount>(1);
   const [quotedDate, setQuotedDate] = useState('');
   const [sending, setSending] = useState(false);
+  const [attaching, setAttaching] = useState(false);
 
   useEffect(() => {
     ensureFont();
   }, []);
+
+  // Re-attach the 4-page PDF to the Google Calendar event using the CURRENT
+  // quote date, so a date change is reflected on the calendar without faxing.
+  const handleReattach = async () => {
+    setAttaching(true);
+    try {
+      const blob = await pdf(
+        <SchedulePDF schedule={schedule} pageCount={4} quotedDate={quotedDate} />,
+      ).toBlob();
+      const form = new FormData();
+      form.append('pdf', blob, fileName);
+      form.append('scheduleId', String(schedule.id));
+      const res = await fetch('/google/attach-pdf', { method: 'POST', credentials: 'include', body: form });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; skipped?: boolean; error?: string };
+      if (data.ok) {
+        toast.success('カレンダーのPDFを更新しました。');
+      } else if (data.skipped) {
+        toast('このスケジュールにはGoogleカレンダーの予定がありません。', { icon: '⚠️' });
+      } else {
+        toast.error(`カレンダー添付に失敗しました: ${data.error ?? '不明なエラー'}`);
+      }
+    } catch {
+      toast.error('カレンダー添付に失敗しました。');
+    } finally {
+      setAttaching(false);
+    }
+  };
 
   const fileName = `${schedule.customerName}_${schedule.pdfNumber}.pdf`;
   const document = useMemo(
@@ -501,14 +529,24 @@ export default function PDFPreview({
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-bold">PDF プレビュー</h1>
         {status !== 'finished' && (
-          <button
-            type="button"
-            onClick={handleSendFax}
-            disabled={sending}
-            className="rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
-          >
-            {sending ? '送信中...' : 'FAX送信'}
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handleReattach}
+              disabled={attaching}
+              className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+            >
+              {attaching ? '反映中...' : 'カレンダーに反映'}
+            </button>
+            <button
+              type="button"
+              onClick={handleSendFax}
+              disabled={sending}
+              className="rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+            >
+              {sending ? '送信中...' : 'FAX送信'}
+            </button>
+          </div>
         )}
       </div>
       <div className="mb-4 grid grid-cols-1 items-center gap-4 sm:grid-cols-2">
