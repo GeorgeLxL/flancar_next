@@ -28,6 +28,11 @@ export default function LoginPage() {
     } catch {
       setUser(null);
     }
+
+    // Prefill the email used last time so the next login is one tap (and so the
+    // browser's own autofill doesn't force a different address).
+    const savedEmail = localStorage.getItem('flancar:lastLoginEmail');
+    if (savedEmail) setEmail(savedEmail);
   }, [setUser]);
 
   useEffect(() => {
@@ -40,6 +45,8 @@ export default function LoginPage() {
     if (!email.trim()) return;
     setLoading(true);
     try {
+      // Remember this address for next time (persists across the OAuth redirect).
+      localStorage.setItem('flancar:lastLoginEmail', email.trim());
       const { url } = await login(email.trim());
       window.location.href = url;
     } catch (error: unknown) {
