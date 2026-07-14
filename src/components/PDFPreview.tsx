@@ -471,6 +471,20 @@ export default function PDFPreview({
       const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (data.ok) {
         toast.success('FAXを送信しました。');
+        // Re-attach the 4-page PDF to the Google Calendar event using the SAME
+        // (possibly date-adjusted) quote date, so the calendar copy matches the
+        // fax instead of keeping the original save-time date. Best-effort.
+        try {
+          const calendarBlob = await pdf(
+            <SchedulePDF schedule={schedule} pageCount={4} quotedDate={quotedDate} />,
+          ).toBlob();
+          const attachForm = new FormData();
+          attachForm.append('pdf', calendarBlob, fileName);
+          attachForm.append('scheduleId', String(schedule.id));
+          await fetch('/google/attach-pdf', { method: 'POST', credentials: 'include', body: attachForm });
+        } catch {
+          /* best-effort — don't fail the fax flow */
+        }
         await onSendPdf?.();
       } else {
         toast.error(`FAX送信に失敗しました: ${data.error ?? '不明なエラー'}`);
