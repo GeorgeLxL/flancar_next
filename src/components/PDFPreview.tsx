@@ -207,11 +207,16 @@ function SchedulePDFPage({
           {type === 'estimate' ? (
             <Text>{formatDate(quotedDate || schedule.createdAt, 'yyyy 年  M 月  d 日')}</Text>
           ) : (
-            // react-pdf collapses repeated whitespace within a single <Text>,
-            // so the blank month/day spots have to be real layout gaps —
-            // empty Views with an explicit width.
+            // Delivery note / invoice: the year, month and day are all left blank
+            // for handwriting. The work (and billing) date is written in by hand
+            // when the job is actually done, which may fall in a different year
+            // than when the estimate was created — so no year is pre-printed.
+            // react-pdf collapses repeated whitespace within a single <Text>, so
+            // each blank spot has to be a real layout gap — an empty View with an
+            // explicit width.
             <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
-              <Text>{new Date().getFullYear()} 年</Text>
+              <View style={{ width: 40 }} />
+              <Text>年</Text>
               <View style={{ width: 22 }} />
               <Text>月</Text>
               <View style={{ width: 22 }} />
